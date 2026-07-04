@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- jellyfin_v1alpha1_jellyfin.yaml
+- jellyfin_v1alpha1_jellyfinplugin.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

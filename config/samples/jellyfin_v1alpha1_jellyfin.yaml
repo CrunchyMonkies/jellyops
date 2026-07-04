@@ -1,0 +1,61 @@
+apiVersion: jellyfin.jellyops.io/v1alpha1
+kind: Jellyfin
+metadata:
+  name: home-media
+  namespace: media
+  labels:
+    app.kubernetes.io/name: jellyops
+spec:
+  image: ghcr.io/example/jellyfin:12.0.0-net10
+  replicas: 1
+  storage:
+    config:
+      size: 10Gi
+      storageClassName: fast-ssd
+    cache:
+      size: 5Gi
+    media:
+      - name: movies
+        mountPath: /media/movies
+        readOnly: true
+        nfs:
+          server: 10.0.0.10
+          path: /export/movies
+          mountOptions: ["nfsvers=4.1", "hard"]
+        library:
+          name: Movies
+          collectionType: movies
+      - name: tv
+        mountPath: /media/tv
+        nfs:
+          server: 10.0.0.10
+          path: /export/tv
+          provision: true # shared RWX PV+PVC so workers can reuse it (§8.2)
+          storageClassName: nfs-media
+        library:
+          name: Shows
+          collectionType: tvshows
+      - name: home-videos
+        mountPath: /media/home-videos
+        existingClaim: home-videos-pvc
+        # no library block -> mounted on disk but NOT registered as a Jellyfin library
+  api:
+    mode: bootstrap # first-run wizard, mints an API key
+    generatedSecretName: home-media-api
+    manageLibraries: true
+    prune: true
+    refreshLibraryOnChange: true
+  service:
+    type: ClusterIP
+  ingress:
+    className: nginx
+    host: jellyfin.example.com
+    tls:
+      secretName: jellyfin-tls
+  hardwareAcceleration:
+    type: vaapi
+    devicePath: /dev/dri/renderD128
+    renderGroupGID: 44
+  pluginSelector:
+    matchLabels:
+      jellyfin.jellyops.io/instance: home-media

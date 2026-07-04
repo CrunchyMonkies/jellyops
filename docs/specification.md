@@ -8,7 +8,9 @@
 
 **JellyOps** is a Go-based Kubernetes operator that declaratively manages the full lifecycle of [Jellyfin](https://jellyfin.org) media-server instances and their plugins. Plugins are delivered **as OCI container images** and mounted on demand using Kubernetes [image volumes](https://kubernetes.io/docs/tasks/configure-pod-container/image-volumes/), so a plugin is version-pinned, immutable, and enabled/disabled by editing a custom resource rather than copying files into a pod.
 
-The reference first-party plugin is **jellycode** (`../jellycode/`), a distributed-transcoding plugin that offloads `ffmpeg` work from the Jellyfin server to a pool of remote worker pods over gRPC. jellycode is the proving ground for the operator's most important design requirement: a plugin is frequently **more than files** — it also ships companion workloads (the transcode workers) and networking (a gRPC Service). The operator must manage all of it end-to-end.
+The operator ships **no plugin-specific logic**: it knows how to deliver *any* plugin image and reconcile whatever workloads and services that plugin declares. A running instance with **no plugins installed** is fully supported; a plugin is added or removed purely by creating or deleting a `JellyfinPlugin` custom resource.
+
+**jellycode** (`../jellycode/`) is a **separately developed, fully optional reference plugin** — a distributed-transcoding plugin that offloads `ffmpeg` work from the Jellyfin server to a pool of remote worker pods over gRPC. The operator treats it exactly like any third-party plugin. It serves as the proving ground for the operator's most important design requirement — that a plugin is frequently **more than files**, also shipping companion workloads (the transcode workers) and networking (a gRPC Service) — but nothing about jellycode is baked into the operator.
 
 ### 1.1 Goals
 
@@ -23,6 +25,7 @@ The reference first-party plugin is **jellycode** (`../jellycode/`), a distribut
 - Not a fork of Jellyfin, and not a build system for it. The operator consumes prebuilt Jellyfin and plugin images.
 - **No true runtime hot-reload.** Jellyfin loads plugins at startup; enabling/disabling a plugin requires a pod restart. The operator makes this declarative and controlled, not instantaneous.
 - Not a general media-server PaaS, multi-tenant billing system, or content manager.
+- **Not coupled to any specific plugin.** The operator ships no plugin-specific logic; plugins (including jellycode) are developed, versioned, and distributed independently, and are enabled or removed purely by creating or deleting a `JellyfinPlugin` CR.
 
 ### 1.3 Glossary
 
@@ -40,7 +43,7 @@ The reference first-party plugin is **jellycode** (`../jellycode/`), a distribut
 ## 2. Personas & User Stories
 
 - **As a platform engineer**, I create one `Jellyfin` CR and get a fully wired instance (workload + PVCs + Service + Ingress) without writing raw manifests.
-- **As a platform engineer**, I enable distributed transcoding by creating a `JellyfinPlugin` CR pointing at the jellycode plugin image; the operator injects the plugin files **and** spins up a pool of worker pods that dial the plugin's gRPC endpoint.
+- **As a platform engineer**, I enable distributed transcoding by installing the optional jellycode plugin — one `JellyfinPlugin` CR pointing at its image; the operator injects the plugin files **and** spins up a pool of worker pods that dial the plugin's gRPC endpoint. (jellycode is one third-party plugin among many; the operator has no special knowledge of it.)
 - **As a platform engineer**, I scale transcode throughput by bumping `spec.workloads[].replicas` on the `JellyfinPlugin`.
 - **As a platform engineer**, I upgrade a plugin by changing its image tag/digest; the operator performs a controlled rollout and reports the new loaded version in status.
 - **As a platform engineer**, I disable a plugin by deleting its CR; the operator removes the image volume on the next rollout and tears down the companion workers (draining them first).
@@ -63,23 +66,25 @@ The reference first-party plugin is **jellycode** (`../jellycode/`), a distribut
             ┌───────────────────────┼─────────────────────┼───────────────────────┐
             ▼                       ▼                     ▼                         ▼
    ┌─────────────────┐   ┌────────────────────┐   ┌──────────────┐        ┌─────────────────┐
-   │ Jellyfin Deploy │   │ Service (8096 HTTP) │   │ PVCs:        │        │ jellycode worker│
-   │  ┌───────────┐  │   │ Service (9090 gRPC) │   │ config/cache │        │ Deployment      │
+   │ Jellyfin Deploy │   │ Service (8096 HTTP) │   │ PVCs:        │        │ plugin workload │
+   │  ┌───────────┐  │   │ Service :9090 (plug)│   │ config/cache │        │ Deployment      │
    │  │ init: copy│  │   └────────────────────┘   │ media (RWX)  │        │  (N replicas)   │
-   │  │ plugins   │  │            ▲                └──────────────┘        │  ffmpeg + agent │
+   │  │ plugins   │  │            ▲                └──────────────┘        │  e.g. jellycode │
    │  └─────┬─────┘  │            │                                        └────────┬────────┘
    │  image volumes  │            │  gRPC bidi stream (h2c :9090)                   │
    │  (1 per plugin) │            └─────────────────────────────────────────────────┘
    │  jellyfin :8096 │              workers DIAL the server's plugin listener
-   │  plugin   :9090 │
+   │  plugin listener│
    └─────────────────┘
 ```
+
+Components on the right — the `:9090` gRPC Service, the companion-workload Deployment, and the plugin listener/stream — are **plugin-provided and optional**. They exist only when an installed plugin declares them (`spec.services` / `spec.workloads`); the jellycode worker is shown as the example. An instance with no plugins has only the Jellyfin Deployment, its `:8096` Service, and PVCs.
 
 ### 3.2 Reconciliation & ownership
 
 - The operator runs as a single `controller-manager` Deployment with leader election.
 - Every resource the operator creates (Deployments, Services, PVCs, Ingress) carries an **owner reference** to the originating CR, so garbage collection is automatic on CR deletion.
-- **Finalizers** guard ordered teardown where needed — notably draining jellycode workers (via the gRPC `Drain`/`JobControl STOP` contract) before deleting their Deployment.
+- **Finalizers** guard ordered teardown where needed — a plugin's companion workloads are gracefully terminated (scaled down, honoring their `preStop` hooks and `terminationGracePeriodSeconds`) before their Deployment and Service are deleted. The drain *behavior* lives in the workload, not the operator: the operator never speaks a plugin's protocol. jellycode's worker, for example, drains on `SIGTERM` via its own gRPC `Drain`/`JobControl STOP` contract.
 - Reconcilers are **level-triggered and idempotent**: they compute the desired state from the CR(s) and converge actual state to it; partial failures requeue with backoff.
 
 ### 3.3 Plugin lifecycle state machine
@@ -104,11 +109,11 @@ Each transition is surfaced as a `status.condition` and a Kubernetes `Event` on 
 
 ### 3.4 Networking
 
-- **Jellyfin HTTP** — port `8096`, exposed via a Service and optional Ingress.
-- **Plugin gRPC (jellycode)** — port `9090` on the Jellyfin pod (the plugin hosts an embedded h2c listener). The operator creates a `ClusterIP` Service so worker pods can resolve and dial it.
-- **Worker → server direction** — workers are clients; they open one long-lived bidirectional gRPC stream to the server's `:9090` Service. No inbound port is needed on workers.
+- **Jellyfin HTTP** — port `8096`, exposed via a Service and optional Ingress. This is the only port the operator itself requires.
+- **Plugin-provided services** — a plugin may declare `spec.services`; the operator creates the corresponding `ClusterIP` Service(s). Ports and protocols belong to the plugin, not the operator. *Example:* the jellycode plugin hosts an embedded h2c gRPC listener on `:9090` and declares a Service so its worker pods can resolve and dial it.
+- **Worker → server direction** *(jellycode example)* — jellycode's workers are clients; each opens one long-lived bidirectional gRPC stream to the server's `:9090` Service. No inbound port is needed on workers. Other plugins may use entirely different topologies.
 - **Operator → instance API** — the `JellyfinAPIReconciler` (§7.6) reaches Jellyfin on `:8096` through the in-cluster Service (never the Ingress) to reconcile libraries.
-- **NetworkPolicy** — the spec recommends restricting `:9090` to worker pods (label selector) and `:8096` to the ingress controller **and the operator** (so API reconciliation still works). See §9.
+- **NetworkPolicy** — the spec recommends restricting plugin service ports (e.g. jellycode's `:9090`) to their consumer pods (label selector) and `:8096` to the ingress controller **and the operator** (so API reconciliation still works). See §9.
 
 ---
 
@@ -122,8 +127,8 @@ Describes a full instance.
 
 ```go
 type JellyfinSpec struct {
-    // Container image for the Jellyfin server. Defaults to a custom Jellyfin v12 / .NET 10
-    // build (see §4.4 — required for jellycode's targetAbi 12.0.0.0).
+    // Container image for the Jellyfin server. Defaults to the official/stable Jellyfin image.
+    // Override only when a plugin requires an ABI-incompatible server build (see §4.4).
     Image     string `json:"image,omitempty"`
     Replicas  *int32 `json:"replicas,omitempty"` // typically 1 (Jellyfin is not active-active)
 
@@ -249,7 +254,7 @@ metadata:
   name: home-media
   namespace: media
 spec:
-  image: ghcr.io/example/jellyfin:12.0.0-net10   # custom v12 build (see §4.4)
+  image: ghcr.io/example/jellyfin:12.0.0-net10   # jellycode requires a v12/.NET 10 server; stock Jellyfin is the operator default — override only for ABI-incompatible plugins (see §4.4)
   replicas: 1
   storage:
     config: { size: 5Gi, accessModes: [ReadWriteOnce] }
@@ -459,13 +464,15 @@ spec:
 
 A reusable, admin-curated catalog entry (default image, ABI range, default workloads) that a namespaced `JellyfinPlugin` can reference by name to avoid repeating boilerplate. Out of scope for Phase 1; reserved here so the API can grow into it.
 
-### 4.4 Base image & ABI compatibility constraint
+### 4.4 ABI compatibility & plugin base-image prerequisites
 
-jellycode's `meta.json` declares `targetAbi: 12.0.0.0` and `framework: net10.0`. **Stock Jellyfin 10.x is ABI-incompatible** and will refuse to load it. Therefore:
+The operator enforces ABI compatibility generically, for **every** plugin, and never privileges any particular server build:
 
-- `Jellyfin.spec.image` defaults to a **custom Jellyfin v12 / .NET 10 build** compatible with jellycode.
-- The operator validates `JellyfinPlugin.meta.targetAbi` against the instance's server version and sets an `ABICompatible` condition; on mismatch it transitions the plugin to `Failed` and emits an event rather than silently mounting an unloadable plugin.
-- Operators running stock Jellyfin must supply a plugin built for that ABI; the field is configurable precisely to support both worlds.
+- **Default server image is stock/official Jellyfin.** `Jellyfin.spec.image` is optional and defaults to the stable upstream image. The operator has no plugin-specific default.
+- **Generic ABI gate.** For each bound plugin, the operator validates `JellyfinPlugin.meta.targetAbi` against the instance's running server version and sets an `ABICompatible` condition. On mismatch it transitions **the plugin** to `Failed` and emits an event — it never silently mounts an unloadable plugin and never blocks or fails the instance itself.
+- **Plugins carry their own base-image prerequisites.** A plugin that needs a non-default server ABI documents that requirement; the user opts in by overriding `spec.image`.
+
+*Example (jellycode prerequisite):* jellycode's `meta.json` declares `targetAbi: 12.0.0.0` and `framework: net10.0`, which stock Jellyfin 10.x is ABI-incompatible with and will refuse to load. A user enabling jellycode must therefore set `spec.image` to a compatible **custom Jellyfin v12 / .NET 10 build**. That is jellycode's prerequisite — documented and shipped with jellycode — not an operator default. Sourcing and maintaining such an image is out of scope for the operator.
 
 ### 4.5 NFS media folders
 
@@ -639,7 +646,7 @@ containers:
 ### 7.3 Ownership, finalizers, teardown
 
 - All generated objects carry owner references for GC.
-- A finalizer on `JellyfinPlugin` ensures workers are **drained before deletion**: the operator signals drain through the gRPC contract (`Drain` then `JobControl{STOP}` per active job) and waits (bounded) before deleting the worker Deployment, so in-flight transcodes aren't hard-killed.
+- A finalizer on `JellyfinPlugin` ensures companion workloads are **gracefully terminated before deletion**: the operator scales them down and waits (bounded) for Kubernetes-native graceful shutdown — the workload's `preStop` hook and `terminationGracePeriodSeconds` — before deleting the Deployment and Service. The drain logic itself lives in the workload; the operator does not speak any plugin's protocol. *Example:* jellycode's worker handles `SIGTERM` by running its own gRPC `Drain` then `JobControl{STOP}` per active job, so in-flight transcodes aren't hard-killed.
 
 ### 7.4 Status conditions (Kubernetes conventions)
 
@@ -707,11 +714,13 @@ The loop is **level-triggered and idempotent**: it re-lists and re-diffs every r
 
 ---
 
-## 8. Worker / jellycode Companion Workload Spec
+## 8. Companion Workloads
 
-jellycode's worker is a standalone .NET console app that **dials** the plugin's gRPC server and runs `ffmpeg`. The operator models it as a `PluginWorkload`.
+The operator reconciles arbitrary plugin-declared companion workloads and services **generically**, with no knowledge of what they do. A plugin lists `spec.workloads[]` (each becomes a Deployment) and `spec.services[]` (each becomes a Service); the operator owns them, wires owner references and finalizers, and surfaces their readiness via `WorkersAvailable`. Everything below uses the **jellycode plugin as the worked example** of that generic surface — none of it is operator built-in.
 
-### 8.1 Worker Deployment shape
+jellycode's worker is a standalone .NET console app that **dials** the plugin's gRPC server and runs `ffmpeg`; the operator models it as one `PluginWorkload` like any other.
+
+### 8.1 Worker Deployment shape (jellycode example)
 
 - **Command-line args** (verified against `src/Worker/Program.cs`):
   - `--server` — gRPC endpoint (default `http://127.0.0.1:9090`); set to the in-cluster Service, e.g. `http://jellycode-grpc.media.svc:9090`.
@@ -721,18 +730,18 @@ jellycode's worker is a standalone .NET console app that **dials** the plugin's 
   - `--scratch` — local scratch dir (default temp); back with an `emptyDir` or fast local volume.
 - **Replicas / scaling** — `spec.workloads[].replicas`; optional HPA hooks in Phase 2 (CPU or a custom queue-depth metric derived from worker `Heartbeat.free_slots`).
 
-### 8.2 Shared storage / path mapping
+### 8.2 Shared storage / path mapping (jellycode example)
 
 jellycode Phase 0 uses **identity path mapping** (`PathMap` in `transcode.proto` is documented as identity for now): the server and workers must see media and the canonical transcode output paths at the **same absolute paths**. Implications the operator must surface:
 
 - **Media** must be reachable at the **same absolute path** in both the Jellyfin pod and the worker pods. The cleanest way to guarantee this is an NFS media folder with `nfs.provision: true` (§4.5): the operator's generated **ReadWriteMany** PV/PVC is mounted at the identical `mountPath` on both sides. An existing RWX PVC works equally well.
 - The canonical transcode output dir (`AssignJob.output_dir`) must likewise be reachable identically by both sides, or future phases must populate `PathMap` to translate. The spec recommends shared RWX media (NFS-provisioned or an RWX PVC) and documents identity path mapping as a Phase 0 constraint.
 
-### 8.3 gRPC contract touchpoints the operator relies on
+### 8.3 gRPC contract touchpoints (jellycode example)
 
-From `src/Contracts/Protos/transcode.proto`:
+The operator does **not** depend on this proto — it drives only Kubernetes-native graceful termination (§7.3). These are the internal touchpoints jellycode's own worker and plugin use to map that lifecycle onto their protocol, from `src/Contracts/Protos/transcode.proto`:
 
-- **Lifecycle/scale-down** — `ServerFrame.Drain` (stop accepting new jobs) and `JobControl{action: STOP}` per job map directly to the finalizer-driven graceful drain in §7.3.
+- **Lifecycle/scale-down** — jellycode's worker maps `SIGTERM` (sent by the operator's finalizer-driven graceful drain, §7.3) onto `ServerFrame.Drain` (stop accepting new jobs) and `JobControl{action: STOP}` per job.
 - **Capacity signals** — worker `Register{max_concurrent, hwaccels, encoders}` and `Heartbeat{active_jobs, free_slots, cpu}` are the natural inputs for autoscaling and observability (§10).
 
 ### 8.4 Security posture (current vs. recommended)
@@ -749,7 +758,7 @@ From `src/Contracts/Protos/transcode.proto`:
 - **Image pull & supply chain** — support `imagePullSecrets`; **recommend digest-pinned** plugin/worker references; reserve cosign/signature verification of plugin images as a Phase 2 admission-time gate.
 - **Plugin trust model** — only cluster admins create `JellyfinPlugin`/catalog resources; plugins are namespace-scoped; ABI gating prevents loading incompatible code. Image volumes are read-only, reducing tamper surface for the file payload.
 - **API credentials (§7.6)** — admin keys live only in Kubernetes Secrets (user-supplied for `provided` mode, operator-generated for `bootstrap`). The operator reaches Jellyfin via the in-cluster Service, never the public Ingress; the token is never logged or written to status (status holds only the Secret name). The operator's RBAC for these Secrets is scoped to the watched namespaces. Bootstrap admin credentials should be rotated per the user's policy; the operator reads, never hard-codes, them.
-- **Network** — restrict `:9090` to worker pods and `:8096` to the ingress controller via NetworkPolicy.
+- **Network** — restrict any plugin-provided service ports (e.g. jellycode's `:9090`) to their consumer pods and `:8096` to the ingress controller via NetworkPolicy.
 
 ---
 
@@ -795,7 +804,7 @@ From `src/Contracts/Protos/transcode.proto`:
 
 ## 13. Roadmap / Phasing
 
-- **Phase 1 (MVP)** — `Jellyfin` CRD (full lifecycle) + `JellyfinPlugin` CRD; image-volume injection (`imageVolume` + `imageVolumeCopy`); jellycode worker workload + gRPC Service + graceful drain; ABI validation; NFS/PVC media folders; **API reconciliation: credential bootstrap + library create/update/prune (§7.6)**; status/conditions/events.
+- **Phase 1 (MVP)** — `Jellyfin` CRD (full lifecycle) + `JellyfinPlugin` CRD; image-volume injection (`imageVolume` + `imageVolumeCopy`); generic companion-workload + Service reconciliation with finalizer-driven graceful drain (validated end-to-end using the jellycode plugin); ABI validation; NFS/PVC media folders; **API reconciliation: credential bootstrap + library create/update/prune (§7.6)**; status/conditions/events.
 - **Phase 2** — `ClusterJellyfinPluginType` catalog; HPA for workers (heartbeat-driven); in-cluster mTLS for the transcode mesh; cosign verification of plugin images; investigate restart-minimizing reload; multi-instance plugin sharing; richer `PathMap` (non-identity) support; broader API reconciliation (users, system settings, scheduled tasks).
 
 ---
@@ -805,12 +814,14 @@ From `src/Contracts/Protos/transcode.proto`:
 - **Read-only `meta.json`** — confirm whether the target Jellyfin v12 build tolerates a read-only plugin dir; if so, `imageVolume` can be the default and the copy mitigation becomes optional.
 - **Runtime support for image volumes** — image volumes require a recent CRI runtime; clusters on older containerd/CRI-O cannot use this mechanism. This is a hard prerequisite that must be checked at install time (the operator should surface a clear precondition error).
 - **jellycode identity path mapping** — Phase 0 assumes server and workers share absolute paths, forcing RWX media and shared output paths. Non-identity mapping is a future `PathMap` feature; until then the operator must enforce/validate matching mount paths.
-- **Custom Jellyfin v12 image sourcing** — who builds and maintains the `targetAbi 12.0.0.0` / `net10.0` server image is an external dependency; the field is configurable but the default must point somewhere real.
+- **Plugin base-image prerequisites** — the operator defaults to stock Jellyfin, so no operator default depends on an external build. Plugins that need a non-default ABI (e.g. jellycode's `targetAbi 12.0.0.0` / `net10.0` server) must source and maintain that image themselves; the operator only needs to validate ABI and surface a clear error on mismatch.
 - **gRPC security** — cleartext h2c is acceptable only inside a trusted cluster boundary; production cross-zone/transcoding-at-the-edge needs the Phase 2 mTLS work.
 
 ---
 
 ### Appendix A — jellycode source references
+
+These map the **reference plugin's** example values back to their source of truth in the sibling `../jellycode/` repo. They describe jellycode, not operator internals — the operator derives none of these values by name.
 
 | Claim in this spec | Source of truth |
 |--------------------|-----------------|

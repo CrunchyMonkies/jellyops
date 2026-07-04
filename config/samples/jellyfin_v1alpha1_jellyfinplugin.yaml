@@ -1,0 +1,43 @@
+apiVersion: jellyfin.jellyops.io/v1alpha1
+kind: JellyfinPlugin
+metadata:
+  name: jellycode-distributed-transcoding
+  namespace: media
+  labels:
+    jellyfin.jellyops.io/instance: home-media
+spec:
+  jellyfinRef:
+    name: home-media
+  pluginImage:
+    reference: ghcr.io/example/jellycode-plugin@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    pullPolicy: IfNotPresent
+  meta:
+    guid: b9f8c1a2-3d4e-4f5a-9b6c-7d8e9f0a1b2c
+    name: "Distributed Transcoding"
+    version: "0.0.1.0"
+    targetAbi: "12.0.0.0"
+  injection: imageVolumeCopy # Jellyfin writes meta.json status; see §6.2
+  install: # pre-start setup script; see §6.4
+    runOnce: true
+    # failurePolicy: Ignore is the default (Jellyfin still boots on error)
+    script: |
+      mkdir -p /config/plugins/configurations
+      cp -n /config/plugins/"Distributed Transcoding_0.0.1.0"/defaults/*.xml \
+        /config/plugins/configurations/
+  services:
+    - name: jellycode-grpc
+      selector: instance # points at the Jellyfin pod
+      ports:
+        - name: grpc
+          port: 9090
+          targetPort: 9090
+  workloads:
+    - name: worker
+      image:
+        reference: ghcr.io/example/jellycode-worker@sha256:1111111111111111111111111111111111111111111111111111111111111111
+      replicas: 3
+      args:
+        - "--server=http://jellycode-grpc.media.svc:9090"
+        - "--ffmpeg=/usr/bin/ffmpeg"
+        - "--max-concurrent=2"
+      terminationGracePeriodSeconds: 120 # allow in-flight transcodes to drain on SIGTERM

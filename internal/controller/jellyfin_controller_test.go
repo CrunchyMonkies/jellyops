@@ -1,0 +1,150 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
+)
+
+var _ = Describe("JellyfinReconciler", func() {
+	var (
+		r  *JellyfinReconciler
+		ns string
+	)
+
+	BeforeEach(func() {
+		r = &JellyfinReconciler{Client: k8sClient, Scheme: scheme.Scheme}
+		ns = newNamespace()
+	})
+
+	reconcileInstance := func(name string) {
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: ns}})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	It("creates the Deployment, Service, config PVC, and Ingress", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "home-media", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{
+				Storage: jellyfinv1alpha1.JellyfinStorage{
+					Media: []jellyfinv1alpha1.MediaFolder{{
+						Name: "movies", MountPath: "/media/movies", ReadOnly: true,
+						NFS: &jellyfinv1alpha1.NFSSource{Server: "10.0.0.10", Path: "/export/movies"},
+					}},
+				},
+				Ingress: &jellyfinv1alpha1.IngressSpec{ClassName: "nginx", Host: "jf.example.com"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("home-media")
+
+		var dep appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "home-media", Namespace: ns}, &dep)).To(Succeed())
+		Expect(dep.Spec.Template.Spec.Containers[0].Name).To(Equal("jellyfin"))
+		Expect(dep.OwnerReferences).To(HaveLen(1))
+		Expect(dep.OwnerReferences[0].Kind).To(Equal("Jellyfin"))
+
+		var svc corev1.Service
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "home-media", Namespace: ns}, &svc)).To(Succeed())
+		Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8096)))
+
+		var pvc corev1.PersistentVolumeClaim
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "home-media-config", Namespace: ns}, &pvc)).To(Succeed())
+
+		var ing networkingv1.Ingress
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "home-media", Namespace: ns}, &ing)).To(Succeed())
+		Expect(ing.Spec.Rules[0].Host).To(Equal("jf.example.com"))
+	})
+
+	It("provisions a PV+PVC for provisioned NFS media", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "prov", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{Storage: jellyfinv1alpha1.JellyfinStorage{
+				Config: jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"},
+				Media: []jellyfinv1alpha1.MediaFolder{{
+					Name: "tv", MountPath: "/media/tv",
+					NFS: &jellyfinv1alpha1.NFSSource{Server: "10.0.0.10", Path: "/export/tv", Provision: true, MountOptions: []string{"nfsvers=4.1"}},
+				}},
+			}},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("prov")
+
+		claim := "prov-media-tv"
+		var pvc corev1.PersistentVolumeClaim
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: claim, Namespace: ns}, &pvc)).To(Succeed())
+		Expect(pvc.Spec.AccessModes).To(ContainElement(corev1.ReadWriteMany))
+
+		var pv corev1.PersistentVolume
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: claim + "-pv"}, &pv)).To(Succeed())
+		Expect(pv.Spec.NFS.Server).To(Equal("10.0.0.10"))
+		Expect(pv.Spec.MountOptions).To(ContainElement("nfsvers=4.1"))
+	})
+
+	It("re-rolls the instance when a bound plugin appears (cross-watch)", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "wm", Namespace: ns},
+			Spec:       jellyfinv1alpha1.JellyfinSpec{Storage: jellyfinv1alpha1.JellyfinStorage{Config: jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"}}},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("wm")
+
+		p := &jellyfinv1alpha1.JellyfinPlugin{
+			ObjectMeta: metav1.ObjectMeta{Name: "dt", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinPluginSpec{
+				JellyfinRef: &corev1.LocalObjectReference{Name: "wm"},
+				PluginImage: jellyfinv1alpha1.ImageSource{Reference: "ghcr.io/x/dt@sha256:abc"},
+				Meta:        jellyfinv1alpha1.PluginMeta{Name: "DT", Version: "1.0.0.0"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, p)).To(Succeed())
+
+		// The watch mapper should map the plugin back to the instance.
+		reqs := r.mapPluginToInstances(ctx, p)
+		Expect(reqs).To(ContainElement(ctrl.Request{NamespacedName: types.NamespacedName{Name: "wm", Namespace: ns}}))
+
+		// Re-reconcile: the plugin's image volume must now be in the pod template.
+		reconcileInstance("wm")
+		var dep appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "wm", Namespace: ns}, &dep)).To(Succeed())
+		found := false
+		for _, v := range dep.Spec.Template.Spec.Volumes {
+			if v.Image != nil {
+				found = true
+			}
+		}
+		Expect(found).To(BeTrue(), "expected an image volume for the bound plugin")
+	})
+})
+
+// newNamespace creates a uniquely-named namespace and returns its name.
+func newNamespace() string {
+	nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-"}}
+	Expect(k8sClient.Create(ctx, nsObj)).To(Succeed())
+	return nsObj.Name
+}
