@@ -32,10 +32,40 @@ func (c *Client) GetStartupConfiguration(ctx context.Context) (StartupConfigurat
 	return cfg, err
 }
 
+// SetStartupConfiguration advances the wizard by posting locale settings
+// (POST /Startup/Configuration). Jellyfin 10.11 requires this step before
+// POST /Startup/User is routable — without it the user-creation call 404s.
+func (c *Client) SetStartupConfiguration(ctx context.Context, cfg StartupConfiguration) error {
+	if cfg.UICulture == "" {
+		cfg.UICulture = "en-US"
+	}
+	if cfg.MetadataCountry == "" {
+		cfg.MetadataCountry = "US"
+	}
+	if cfg.PreferredLanguage == "" {
+		cfg.PreferredLanguage = "en"
+	}
+	return c.do(ctx, http.MethodPost, "/Startup/Configuration", nil, cfg, nil)
+}
+
+// GetStartupUser fetches the pending first-user state (GET /Startup/User).
+// Jellyfin 10.11 requires this GET before POST /Startup/User becomes routable —
+// without it the user-creation POST returns 404.
+func (c *Client) GetStartupUser(ctx context.Context) error {
+	return c.do(ctx, http.MethodGet, "/Startup/User", nil, nil, nil)
+}
+
 // CreateStartupUser creates the initial admin user (POST /Startup/User).
 func (c *Client) CreateStartupUser(ctx context.Context, name, password string) error {
 	return c.do(ctx, http.MethodPost, "/Startup/User", nil,
 		map[string]string{"Name": name, "Password": password}, nil)
+}
+
+// SetStartupRemoteAccess configures remote access during the wizard
+// (POST /Startup/RemoteAccess). Automatic UPnP port mapping is left disabled.
+func (c *Client) SetStartupRemoteAccess(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/Startup/RemoteAccess", nil,
+		map[string]bool{"EnableRemoteAccess": true, "EnableAutomaticPortMapping": false}, nil)
 }
 
 // CompleteStartup finishes the first-run wizard (POST /Startup/Complete).
@@ -84,10 +114,21 @@ func (c *Client) CreateAPIKey(ctx context.Context, app string) (string, error) {
 // unavailable) falls through to authentication + key minting.
 func (c *Client) Bootstrap(ctx context.Context, username, password, app string) (string, error) {
 	if _, err := c.GetStartupConfiguration(ctx); err == nil {
-		// Wizard still available: create the admin and complete setup. Ignore
-		// "already exists"-style conflicts so re-runs are safe.
+		// Wizard still available. The steps must run in order: Jellyfin 10.11
+		// only routes POST /Startup/User after POST /Startup/Configuration has
+		// advanced the wizard. Ignore "already done" conflicts so re-runs are safe.
+		if err := c.SetStartupConfiguration(ctx, StartupConfiguration{}); err != nil && !IsStatus(err, http.StatusBadRequest) {
+			return "", fmt.Errorf("set startup configuration: %w", err)
+		}
+		// GET must precede POST or Jellyfin 10.11 404s the user-creation call.
+		if err := c.GetStartupUser(ctx); err != nil && !IsStatus(err, http.StatusBadRequest) {
+			return "", fmt.Errorf("get startup user: %w", err)
+		}
 		if err := c.CreateStartupUser(ctx, username, password); err != nil && !IsStatus(err, http.StatusBadRequest) {
 			return "", fmt.Errorf("create startup user: %w", err)
+		}
+		if err := c.SetStartupRemoteAccess(ctx); err != nil && !IsStatus(err, http.StatusBadRequest) {
+			return "", fmt.Errorf("set startup remote access: %w", err)
 		}
 		if err := c.CompleteStartup(ctx); err != nil && !IsStatus(err, http.StatusBadRequest) {
 			return "", fmt.Errorf("complete startup: %w", err)

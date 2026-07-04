@@ -48,12 +48,18 @@ func TestAuthHeader(t *testing.T) {
 }
 
 func TestBootstrapHappyPath(t *testing.T) {
-	var createdUser, completed, createdKey bool
+	var createdUser, completed, createdKey, configPosted bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/Startup/Configuration", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			configPosted = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(StartupConfiguration{UICulture: "en-US"})
 	})
 	mux.HandleFunc("/Startup/User", func(w http.ResponseWriter, r *http.Request) { createdUser = true })
+	mux.HandleFunc("/Startup/RemoteAccess", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("/Startup/Complete", func(w http.ResponseWriter, r *http.Request) { completed = true })
 	mux.HandleFunc("/Users/AuthenticateByName", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(AuthenticationResult{AccessToken: "session-tok"})
@@ -78,8 +84,8 @@ func TestBootstrapHappyPath(t *testing.T) {
 	if key != "durable-key" {
 		t.Errorf("key = %q", key)
 	}
-	if !createdUser || !completed || !createdKey {
-		t.Errorf("wizard steps skipped: user=%v complete=%v key=%v", createdUser, completed, createdKey)
+	if !configPosted || !createdUser || !completed || !createdKey {
+		t.Errorf("wizard steps skipped: config=%v user=%v complete=%v key=%v", configPosted, createdUser, completed, createdKey)
 	}
 }
 

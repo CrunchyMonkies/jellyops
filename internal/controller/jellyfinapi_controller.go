@@ -95,7 +95,7 @@ func (r *JellyfinAPIReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Gate on instance readiness; never address the public Ingress.
 	if c := apimeta.FindStatusCondition(jf.Status.Conditions, conditionReady); c == nil || c.Status != metav1.ConditionTrue {
 		setCondition(&jf.Status.Conditions, conditionAPIReady, metav1.ConditionFalse, "InstanceNotReady", "Waiting for instance to become Ready", jf.Generation)
-		return ctrl.Result{RequeueAfter: requeue}, r.Status().Update(ctx, &jf)
+		return ctrl.Result{RequeueAfter: requeue}, writeJellyfinStatus(ctx, r.Client, &jf)
 	}
 
 	base := jf.Status.Endpoints.Service
@@ -111,7 +111,7 @@ func (r *JellyfinAPIReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		log.Error(err, "credential resolution failed")
 		setCondition(&jf.Status.Conditions, conditionAPIReady, metav1.ConditionFalse, "AuthFailed", err.Error(), jf.Generation)
-		return ctrl.Result{RequeueAfter: requeue}, r.Status().Update(ctx, &jf)
+		return ctrl.Result{RequeueAfter: requeue}, writeJellyfinStatus(ctx, r.Client, &jf)
 	}
 	cli.SetToken(token)
 
@@ -120,13 +120,13 @@ func (r *JellyfinAPIReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "library reconciliation failed")
 			setCondition(&jf.Status.Conditions, conditionLibrariesReady, metav1.ConditionFalse, "LibraryError", err.Error(), jf.Generation)
 			setCondition(&jf.Status.Conditions, conditionAPIReady, metav1.ConditionTrue, "Authenticated", "Authenticated; library reconcile pending", jf.Generation)
-			return ctrl.Result{RequeueAfter: requeue}, r.Status().Update(ctx, &jf)
+			return ctrl.Result{RequeueAfter: requeue}, writeJellyfinStatus(ctx, r.Client, &jf)
 		}
 		setCondition(&jf.Status.Conditions, conditionLibrariesReady, metav1.ConditionTrue, "Reconciled", "Libraries reconciled", jf.Generation)
 	}
 
 	setCondition(&jf.Status.Conditions, conditionAPIReady, metav1.ConditionTrue, "Authenticated", "Authenticated to the Jellyfin API", jf.Generation)
-	return ctrl.Result{RequeueAfter: requeue}, r.Status().Update(ctx, &jf)
+	return ctrl.Result{RequeueAfter: requeue}, writeJellyfinStatus(ctx, r.Client, &jf)
 }
 
 func (r *JellyfinAPIReconciler) newClient(base, deviceID string) (APIClient, error) {

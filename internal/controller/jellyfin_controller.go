@@ -325,7 +325,7 @@ func (r *JellyfinReconciler) updateStatus(ctx context.Context, jf *jellyfinv1alp
 		setCondition(&jf.Status.Conditions, conditionReady, metav1.ConditionFalse, "DeploymentNotAvailable", "Waiting for Jellyfin deployment to become available", jf.Generation)
 		setCondition(&jf.Status.Conditions, conditionPluginsLoaded, metav1.ConditionFalse, "PodNotReady", "Pod not yet ready", jf.Generation)
 	}
-	return r.Status().Update(ctx, jf)
+	return writeJellyfinStatus(ctx, r.Client, jf)
 }
 
 func setCondition(conds *[]metav1.Condition, condType string, status metav1.ConditionStatus, reason, msg string, gen int64) {
@@ -345,6 +345,8 @@ func (r *JellyfinReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&jellyfinv1alpha1.Jellyfin{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
+		Owns(&networkingv1.Ingress{}).
 		Watches(&jellyfinv1alpha1.JellyfinPlugin{}, handler.EnqueueRequestsFromMapFunc(r.mapPluginToInstances)).
 		Named("jellyfin").
 		Complete(r)
