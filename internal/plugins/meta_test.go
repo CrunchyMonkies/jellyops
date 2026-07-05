@@ -55,6 +55,28 @@ func TestPluginSubPath(t *testing.T) {
 	}
 }
 
+func TestServerVersionFromImage(t *testing.T) {
+	cases := []struct {
+		name  string
+		image string
+		want  string
+	}{
+		{"plain semver tag", "ghcr.io/x/jellyfin:12.0.0", "12.0.0"},
+		{"suffixed tag", "ghcr.io/x/jellyfin:12.0.0-net10", "12.0.0"},
+		{"v-prefixed rc tag", "ghcr.io/crunchymonkies/jellyfin:v12.0.0-rc-jc-0.1.0", "12.0.0"},
+		{"harbor -web tag", "harbor.bne1.ouchi.com.au/applications/jellyfin-server:12.0.0-web", "12.0.0"},
+		{"digest ref (no tag)", "ghcr.io/x/jellyfin@sha256:abc", ""},
+		{"non-version tag", "ghcr.io/x/jellyfin:latest", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ServerVersionFromImage(tc.image); got != tc.want {
+				t.Errorf("ServerVersionFromImage(%q) = %q, want %q", tc.image, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestABICompatible(t *testing.T) {
 	cases := []struct {
 		name    string

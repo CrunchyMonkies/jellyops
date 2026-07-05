@@ -113,8 +113,9 @@ func imageTag(image string) string {
 }
 
 // ServerVersionFromImage derives the Jellyfin server version from an image tag,
-// e.g. "ghcr.io/x/jellyfin:12.0.0-net10" -> "12.0.0". Returns "" when the tag
-// carries no parseable version.
+// e.g. "ghcr.io/x/jellyfin:12.0.0-net10" -> "12.0.0" and the standard v-prefixed
+// form "ghcr.io/x/jellyfin:v12.0.0-rc-jc-0.1.0" -> "12.0.0". Returns "" when the
+// tag carries no parseable version.
 func ServerVersionFromImage(image string) string {
 	tag := imageTag(image)
 	if tag == "" {
@@ -124,6 +125,8 @@ func ServerVersionFromImage(image string) string {
 	if i := strings.IndexAny(tag, "-+_"); i >= 0 {
 		ver = tag[:i]
 	}
+	// Tolerate the conventional "v" prefix on semver tags (e.g. v12.0.0).
+	ver = strings.TrimPrefix(ver, "v")
 	if _, err := parseVersion(ver); err != nil {
 		return ""
 	}
