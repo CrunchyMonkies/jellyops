@@ -86,6 +86,8 @@ func BuildWorkloadDeployment(jf *jellyfinv1alpha1.Jellyfin, p *jellyfinv1alpha1.
 				Spec: corev1.PodSpec{
 					Containers:                    []corev1.Container{container},
 					Volumes:                       volumes,
+					NodeSelector:                  w.NodeSelector,
+					Tolerations:                   w.Tolerations,
 					TerminationGracePeriodSeconds: w.TerminationGracePeriodSeconds,
 					SecurityContext:               &corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
 				},

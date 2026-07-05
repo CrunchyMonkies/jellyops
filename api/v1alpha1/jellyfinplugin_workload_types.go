@@ -110,6 +110,15 @@ type PluginWorkload struct {
 	// +optional
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 
+	// NodeSelector constrains the workload to nodes with matching labels (e.g. a GPU node).
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations let the workload schedule onto tainted nodes (e.g. a node dedicated to
+	// GPU workloads via a NoExecute taint).
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
 	// Autoscaling is a Phase-2 placeholder for HPA hooks.
 	// +optional
 	Autoscaling *WorkloadAutoscaling `json:"autoscaling,omitempty"`
