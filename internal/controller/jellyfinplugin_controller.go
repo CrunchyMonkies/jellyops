@@ -138,19 +138,50 @@ func (r *JellyfinPluginReconciler) validateABI(p *jellyfinv1alpha1.JellyfinPlugi
 }
 
 func (r *JellyfinPluginReconciler) reconcileWorkloads(ctx context.Context, p *jellyfinv1alpha1.JellyfinPlugin, jf *jellyfinv1alpha1.Jellyfin) error {
+	desired := make(map[string]bool, len(p.Spec.Workloads))
 	for _, w := range p.Spec.Workloads {
-		desired := plugins.BuildWorkloadDeployment(jf, p, w)
-		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace}}
-		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
-			dep.Labels = desired.Labels
+		desired[w.Name] = true
+		dep := plugins.BuildWorkloadDeployment(jf, p, w)
+		obj := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: dep.Name, Namespace: dep.Namespace}}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, obj, func() error {
+			obj.Labels = dep.Labels
 			// Selector is immutable; only assign on create.
-			if dep.CreationTimestamp.IsZero() {
-				dep.Spec.Selector = desired.Spec.Selector
+			if obj.CreationTimestamp.IsZero() {
+				obj.Spec.Selector = dep.Spec.Selector
 			}
-			dep.Spec.Replicas = desired.Spec.Replicas
-			dep.Spec.Template = desired.Spec.Template
-			return controllerutil.SetControllerReference(p, dep, r.Scheme)
+			obj.Spec.Replicas = dep.Spec.Replicas
+			obj.Spec.Template = dep.Spec.Template
+			return controllerutil.SetControllerReference(p, obj, r.Scheme)
 		}); err != nil {
+			return err
+		}
+	}
+	return r.pruneWorkloads(ctx, p, desired)
+}
+
+// pruneWorkloads deletes Deployments for workloads that were removed from (or
+// renamed in) the plugin spec. Owner-reference GC does not cover this: the owner
+// JellyfinPlugin still exists, only the workload entry is gone. Deletion is scoped
+// to this plugin's operator-managed workload Deployments so it can never touch the
+// instance server or web Deployments (which carry no PluginLabel).
+func (r *JellyfinPluginReconciler) pruneWorkloads(ctx context.Context, p *jellyfinv1alpha1.JellyfinPlugin, desired map[string]bool) error {
+	var deps appsv1.DeploymentList
+	if err := r.List(ctx, &deps,
+		client.InNamespace(p.Namespace),
+		client.MatchingLabels{plugins.PluginLabel: p.Name},
+	); err != nil {
+		return err
+	}
+	for i := range deps.Items {
+		dep := &deps.Items[i]
+		if dep.Labels[plugins.ManagedByLabel] != plugins.ManagedByValue {
+			continue
+		}
+		name, ok := dep.Labels[plugins.WorkloadLabel]
+		if !ok || desired[name] {
+			continue
+		}
+		if err := r.Delete(ctx, dep); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}

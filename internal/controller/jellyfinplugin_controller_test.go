@@ -92,6 +92,45 @@ var _ = Describe("JellyfinPluginReconciler", func() {
 		Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/instance", "home-media"))
 	})
 
+	It("prunes a workload Deployment when it is removed from the spec", func() {
+		makeInstance("prune-media", "ghcr.io/x/jellyfin:12.0.0")
+		p := &jellyfinv1alpha1.JellyfinPlugin{
+			ObjectMeta: metav1.ObjectMeta{Name: "pr", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinPluginSpec{
+				JellyfinRef: &corev1.LocalObjectReference{Name: "prune-media"},
+				PluginImage: jellyfinv1alpha1.ImageSource{Reference: "ghcr.io/x/pr@sha256:abc"},
+				Meta:        jellyfinv1alpha1.PluginMeta{Name: "Prune", Version: "0.0.1.0", TargetABI: "12.0.0.0"},
+				Workloads: []jellyfinv1alpha1.PluginWorkload{
+					{Name: "alpha", Image: jellyfinv1alpha1.ImageSource{Reference: "ghcr.io/x/worker@sha256:def"}},
+					{Name: "beta", Image: jellyfinv1alpha1.ImageSource{Reference: "ghcr.io/x/worker@sha256:def"}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, p)).To(Succeed())
+
+		_, err := reconcilePlugin("pr")
+		Expect(err).NotTo(HaveOccurred())
+
+		var dep appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pr-alpha", Namespace: ns}, &dep)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pr-beta", Namespace: ns}, &dep)).To(Succeed())
+
+		// Drop "alpha" from the spec; the reconcile should delete its Deployment.
+		var got jellyfinv1alpha1.JellyfinPlugin
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pr", Namespace: ns}, &got)).To(Succeed())
+		got.Spec.Workloads = []jellyfinv1alpha1.PluginWorkload{
+			{Name: "beta", Image: jellyfinv1alpha1.ImageSource{Reference: "ghcr.io/x/worker@sha256:def"}},
+		}
+		Expect(k8sClient.Update(ctx, &got)).To(Succeed())
+
+		_, err = reconcilePlugin("pr")
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pr-beta", Namespace: ns}, &dep)).To(Succeed())
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: "pr-alpha", Namespace: ns}, &dep)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	})
+
 	It("marks an ABI-incompatible plugin Failed and creates no workloads", func() {
 		makeInstance("srv", "ghcr.io/x/jellyfin:12.0.0-net10")
 		p := &jellyfinv1alpha1.JellyfinPlugin{
