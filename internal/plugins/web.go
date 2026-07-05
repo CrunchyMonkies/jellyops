@@ -42,7 +42,7 @@ func WebServiceName(jf *jellyfinv1alpha1.Jellyfin) string {
 // WebLabels are applied to web-tier owned objects.
 func WebLabels(jf *jellyfinv1alpha1.Jellyfin) map[string]string {
 	return map[string]string{
-		NameLabel:      AppName,
+		NameLabel:      WebAppName,
 		InstanceLabel:  jf.Name,
 		ManagedByLabel: ManagedByValue,
 		ComponentLabel: "web",
@@ -50,10 +50,12 @@ func WebLabels(jf *jellyfinv1alpha1.Jellyfin) map[string]string {
 }
 
 // WebSelectorLabels are the immutable Deployment/Service selector labels for the
-// web tier. The component label prevents collisions with the server pod selector.
+// web tier. The distinct NameLabel (WebAppName) keeps web pods out of the instance
+// selectors used by the server Service and plugin gRPC services — a shared NameLabel
+// with only an extra component label would still be matched by those subset selectors.
 func WebSelectorLabels(jf *jellyfinv1alpha1.Jellyfin) map[string]string {
 	return map[string]string{
-		NameLabel:      AppName,
+		NameLabel:      WebAppName,
 		InstanceLabel:  jf.Name,
 		ComponentLabel: "web",
 	}

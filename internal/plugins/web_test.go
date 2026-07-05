@@ -157,12 +157,21 @@ func TestWebSelectorLabelsDoNotCollideWithInstance(t *testing.T) {
 	instSel := InstanceSelectorLabels(jf)
 	webSel := WebSelectorLabels(jf)
 
-	// The web selector must have a label key that the instance selector does not,
-	// so Deployments/Services don't accidentally cross-select.
-	if _, ok := instSel[ComponentLabel]; ok {
-		t.Fatal("instance selector should not have component label")
+	// A web pod must NOT be selected by the instance selector. Because MatchLabels is
+	// a subset match, an extra component label on the web pod is not enough — the web
+	// pod must differ on one of the instance selector's OWN keys. Assert every instance
+	// selector key resolves to a different value on the web side (here: NameLabel).
+	collides := true
+	for k, v := range instSel {
+		if webSel[k] != v {
+			collides = false
+			break
+		}
 	}
-	if _, ok := webSel[ComponentLabel]; !ok {
-		t.Fatal("web selector must have component label")
+	if collides {
+		t.Fatalf("web selector %v is a superset of instance selector %v; web pods would be cross-selected", webSel, instSel)
+	}
+	if webSel[NameLabel] == instSel[NameLabel] {
+		t.Fatalf("web NameLabel %q must differ from instance NameLabel %q", webSel[NameLabel], instSel[NameLabel])
 	}
 }

@@ -33,6 +33,11 @@ import (
 const (
 	// AppName is the app.kubernetes.io/name label value for instance pods.
 	AppName = "jellyfin"
+	// WebAppName is the app.kubernetes.io/name for the web tier. It MUST differ from
+	// AppName so web pods are not matched by instance-scoped selectors (the server
+	// Service on :8096 and plugin gRPC services select on {name: AppName, instance},
+	// and a web pod carrying AppName would pollute their endpoints).
+	WebAppName = "jellyfin-web"
 	// ManagedByValue marks objects owned by this operator.
 	ManagedByValue = "jellyops"
 
