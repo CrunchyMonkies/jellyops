@@ -65,13 +65,35 @@ Tests are layered:
   cross-watch, finalizer drain, Secret/status wiring. No kubelet, so pod-run behavior
   (image-volume mount, install execution, live bootstrap) is proven only on a real cluster.
 
-### Deploy
+### Install
+
+Prebuilt multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR by CI
+(`.github/workflows/publish.yml`) — on every push to the `production` branch and on
+version tags:
+
+| Ref pushed | Image tags |
+|---|---|
+| `production` branch | `ghcr.io/crunchymonkies/jellyops:production`, `:latest`, `:sha-<short>` |
+| tag `vX.Y.Z` | `ghcr.io/crunchymonkies/jellyops:X.Y.Z`, `:X.Y`, `:latest`, `:sha-<short>` |
+
+Install the CRDs and deploy the operator (pin a version tag for production):
+
+```sh
+make install                                              # install CRDs
+make deploy IMG=ghcr.io/crunchymonkies/jellyops:latest    # or :X.Y.Z
+kubectl apply -k config/samples                           # example Jellyfin + jellycode JellyfinPlugin
+```
+
+Cutting a release: push to `production` for a rolling `:latest`, or push a `vX.Y.Z` tag
+for a pinned, immutable version.
+
+> If the GHCR package is private, add an `imagePullSecret` for `ghcr.io` to the operator's
+> namespace (or make the package public in the repo's package settings).
+
+### Build locally
 
 ```sh
 make docker-build docker-push IMG=<registry>/jellyops:tag
-make install                        # install CRDs
-make deploy IMG=<registry>/jellyops:tag
-kubectl apply -k config/samples     # example Jellyfin + jellycode JellyfinPlugin
 ```
 
 ## Project layout
