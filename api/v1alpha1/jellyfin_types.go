@@ -23,6 +23,7 @@ import (
 )
 
 // JellyfinSpec defines the desired state of a Jellyfin instance.
+// +kubebuilder:validation:XValidation:rule="!(has(self.ingress) && has(self.gateway))",message="ingress and gateway are mutually exclusive"
 type JellyfinSpec struct {
 	// Image is the Jellyfin server container image. Defaults to a stock/official
 	// Jellyfin image when empty. Override only when a plugin requires an
@@ -44,9 +45,18 @@ type JellyfinSpec struct {
 	// +optional
 	Service ServiceSpec `json:"service,omitempty"`
 
-	// Ingress optionally exposes the instance over HTTP(S).
+	// Ingress optionally exposes the instance over HTTP(S). Mutually exclusive
+	// with Gateway.
 	// +optional
 	Ingress *IngressSpec `json:"ingress,omitempty"`
+
+	// Web deploys a separate web-tier (jellyfin-web/nginx) Deployment and Service.
+	// +optional
+	Web *WebSpec `json:"web,omitempty"`
+
+	// Gateway configures a Gateway API HTTPRoute. Mutually exclusive with Ingress.
+	// +optional
+	Gateway *GatewaySpec `json:"gateway,omitempty"`
 
 	// Resources sets the Jellyfin container resource requests/limits.
 	// +optional

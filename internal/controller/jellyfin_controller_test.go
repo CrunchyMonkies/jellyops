@@ -26,7 +26,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
 )
@@ -104,6 +106,123 @@ var _ = Describe("JellyfinReconciler", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: claim + "-pv"}, &pv)).To(Succeed())
 		Expect(pv.Spec.NFS.Server).To(Equal("10.0.0.10"))
 		Expect(pv.Spec.MountOptions).To(ContainElement("nfsvers=4.1"))
+	})
+
+	It("creates web Deployment and Service when spec.web is set", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-test", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{
+				Storage: jellyfinv1alpha1.JellyfinStorage{Config: jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"}},
+				Web: &jellyfinv1alpha1.WebSpec{
+					Image:    "ghcr.io/crunchymonkies/jellyfin-web:latest",
+					Replicas: ptr.To(int32(2)),
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("web-test")
+
+		var dep appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "web-test-web", Namespace: ns}, &dep)).To(Succeed())
+		Expect(dep.Spec.Template.Spec.Containers[0].Name).To(Equal("web"))
+		Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
+		Expect(dep.OwnerReferences).To(HaveLen(1))
+		Expect(dep.OwnerReferences[0].Kind).To(Equal("Jellyfin"))
+		Expect(dep.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(80)))
+
+		var svc corev1.Service
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "web-test-web", Namespace: ns}, &svc)).To(Succeed())
+		Expect(svc.Spec.Ports[0].Port).To(Equal(int32(80)))
+		Expect(svc.Spec.Selector["app.kubernetes.io/component"]).To(Equal("web"))
+	})
+
+	It("deletes web Deployment and Service when spec.web is removed", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-del", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{
+				Storage: jellyfinv1alpha1.JellyfinStorage{Config: jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"}},
+				Web: &jellyfinv1alpha1.WebSpec{
+					Image: "web:1",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("web-del")
+
+		// Verify web objects exist.
+		var dep appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "web-del-web", Namespace: ns}, &dep)).To(Succeed())
+
+		// Remove web from spec.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "web-del", Namespace: ns}, jf)).To(Succeed())
+		jf.Spec.Web = nil
+		Expect(k8sClient.Update(ctx, jf)).To(Succeed())
+		reconcileInstance("web-del")
+
+		// Web Deployment should be gone.
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: "web-del-web", Namespace: ns}, &dep)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("creates an HTTPRoute when spec.gateway is set", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "gw-test", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{
+				Storage: jellyfinv1alpha1.JellyfinStorage{Config: jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"}},
+				Web:     &jellyfinv1alpha1.WebSpec{Image: "web:1"},
+				Gateway: &jellyfinv1alpha1.GatewaySpec{
+					GatewayRef: jellyfinv1alpha1.GatewayReference{
+						Name:      "main-gw",
+						Namespace: "infra",
+					},
+					Hostname: "jellyfin.example.com",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("gw-test")
+
+		var route gatewayv1.HTTPRoute
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "gw-test", Namespace: ns}, &route)).To(Succeed())
+		Expect(route.OwnerReferences).To(HaveLen(1))
+		Expect(route.OwnerReferences[0].Kind).To(Equal("Jellyfin"))
+		Expect(route.Spec.Hostnames).To(HaveLen(1))
+		Expect(string(route.Spec.Hostnames[0])).To(Equal("jellyfin.example.com"))
+		Expect(route.Spec.Rules).To(HaveLen(2))
+		// First rule: /web -> web service.
+		Expect(*route.Spec.Rules[0].Matches[0].Path.Value).To(Equal("/web"))
+		Expect(string(route.Spec.Rules[0].BackendRefs[0].Name)).To(Equal("gw-test-web"))
+		// Second rule: / -> server service.
+		Expect(*route.Spec.Rules[1].Matches[0].Path.Value).To(Equal("/"))
+		Expect(string(route.Spec.Rules[1].BackendRefs[0].Name)).To(Equal("gw-test"))
+	})
+
+	It("deletes the HTTPRoute when spec.gateway is removed", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "gw-del", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{
+				Storage: jellyfinv1alpha1.JellyfinStorage{Config: jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"}},
+				Web:     &jellyfinv1alpha1.WebSpec{Image: "web:1"},
+				Gateway: &jellyfinv1alpha1.GatewaySpec{
+					GatewayRef: jellyfinv1alpha1.GatewayReference{Name: "gw"},
+					Hostname:   "jf.local",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("gw-del")
+
+		var route gatewayv1.HTTPRoute
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "gw-del", Namespace: ns}, &route)).To(Succeed())
+
+		// Remove gateway from spec.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "gw-del", Namespace: ns}, jf)).To(Succeed())
+		jf.Spec.Gateway = nil
+		Expect(k8sClient.Update(ctx, jf)).To(Succeed())
+		reconcileInstance("gw-del")
+
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: "gw-del", Namespace: ns}, &route)
+		Expect(err).To(HaveOccurred())
 	})
 
 	It("re-rolls the instance when a bound plugin appears (cross-watch)", func() {

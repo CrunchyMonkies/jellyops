@@ -59,3 +59,21 @@ spec:
   pluginSelector:
     matchLabels:
       jellyfin.jellyops.io/instance: home-media
+  # web: # Uncomment to deploy a separate web-tier (jellyfin-web/nginx)
+  #   image: ghcr.io/crunchymonkies/jellyfin-web:latest
+  #   replicas: 2
+  #   resources:
+  #     requests:
+  #       cpu: 50m
+  #       memory: 64Mi
+  #     limits:
+  #       cpu: 200m
+  #       memory: 128Mi
+  # gateway: # Uncomment to use Gateway API instead of Ingress (mutually exclusive)
+  #   gatewayRef:
+  #     name: main-gateway
+  #     namespace: infra
+  #     sectionName: https
+  #   hostname: jellyfin.example.com
+  #   annotations:
+  #     gateway.example.com/custom: "true"

@@ -119,6 +119,11 @@ type PluginWorkload struct {
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 
+	// PriorityClassName assigns a PriorityClass to the workload pod, controlling
+	// scheduling priority and preemption behavior.
+	// +optional
+	PriorityClassName string `json:"priorityClassName,omitempty"`
+
 	// Autoscaling is a Phase-2 placeholder for HPA hooks.
 	// +optional
 	Autoscaling *WorkloadAutoscaling `json:"autoscaling,omitempty"`

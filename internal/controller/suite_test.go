@@ -18,7 +18,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -32,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -63,11 +66,19 @@ var _ = BeforeSuite(func() {
 	err = jellyfinv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = gatewayv1.Install(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:scheme
 
 	By("bootstrapping test environment")
+	gatewayCRDPath := gatewayCRDDir()
+	crdPaths := []string{filepath.Join("..", "..", "config", "crd", "bases")}
+	if gatewayCRDPath != "" {
+		crdPaths = append(crdPaths, gatewayCRDPath)
+	}
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     crdPaths,
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -98,6 +109,24 @@ var _ = AfterSuite(func() {
 		return testEnv.Stop()
 	}, time.Minute, time.Second).Should(Succeed())
 })
+
+// gatewayCRDDir locates the gateway-api standard CRD directory inside the Go
+// module cache. Returns empty string if unresolvable (tests that need it will
+// still compile; the envtest API server just won't have the CRDs).
+func gatewayCRDDir() string {
+	cmd := exec.Command("go", "list", "-m", "-json", "sigs.k8s.io/gateway-api")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	var info struct {
+		Dir string `json:"Dir"`
+	}
+	if err := json.Unmarshal(out, &info); err != nil || info.Dir == "" {
+		return ""
+	}
+	return filepath.Join(info.Dir, "config", "crd", "standard")
+}
 
 // getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.
 // ENVTEST-based tests depend on specific binaries, usually located in paths set by

@@ -862,6 +862,11 @@ spec:
                         - containerPort
                         type: object
                       type: array
+                    priorityClassName:
+                      description: |-
+                        PriorityClassName assigns a PriorityClass to the workload pod, controlling
+                        scheduling priority and preemption behavior.
+                      type: string
                     replicas:
                       description: Replicas is the desired replica count. Defaults
                         to 1.

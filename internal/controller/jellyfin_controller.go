@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
 	"github.com/crunchymonkies/jellyops/internal/plugins"
@@ -57,6 +58,7 @@ type JellyfinReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=persistentvolumes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile converges the instance's owned objects toward desired state.
 func (r *JellyfinReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -88,6 +90,12 @@ func (r *JellyfinReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	if err := r.reconcileIngress(ctx, &jf); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ingress: %w", err)
+	}
+	if err := r.reconcileWeb(ctx, &jf); err != nil {
+		return ctrl.Result{}, fmt.Errorf("web: %w", err)
+	}
+	if err := r.reconcileGateway(ctx, &jf); err != nil {
+		return ctrl.Result{}, fmt.Errorf("gateway: %w", err)
 	}
 
 	if err := r.updateStatus(ctx, &jf, healthy); err != nil {
@@ -278,6 +286,68 @@ func (r *JellyfinReconciler) reconcileIngress(ctx context.Context, jf *jellyfinv
 			ing.Spec.TLS = []networkingv1.IngressTLS{{Hosts: []string{spec.Host}, SecretName: spec.TLS.SecretName}}
 		}
 		return controllerutil.SetControllerReference(jf, ing, r.Scheme)
+	})
+	return err
+}
+
+func (r *JellyfinReconciler) reconcileWeb(ctx context.Context, jf *jellyfinv1alpha1.Jellyfin) error {
+	webDepName := plugins.WebDeploymentName(jf)
+	webSvcName := plugins.WebServiceName(jf)
+
+	if jf.Spec.Web == nil {
+		// Best-effort cleanup of previously-created web objects.
+		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: webDepName, Namespace: jf.Namespace}}
+		if err := r.Delete(ctx, dep); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: webSvcName, Namespace: jf.Namespace}}
+		if err := r.Delete(ctx, svc); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+
+	desired := plugins.BuildWebDeployment(jf)
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: webDepName, Namespace: jf.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
+		dep.Labels = desired.Labels
+		dep.Spec = desired.Spec
+		return controllerutil.SetControllerReference(jf, dep, r.Scheme)
+	}); err != nil {
+		return err
+	}
+
+	desiredSvc := plugins.BuildWebService(jf)
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: webSvcName, Namespace: jf.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		svc.Labels = desiredSvc.Labels
+		svc.Annotations = desiredSvc.Annotations
+		svc.Spec.Type = desiredSvc.Spec.Type
+		svc.Spec.Selector = desiredSvc.Spec.Selector
+		svc.Spec.Ports = desiredSvc.Spec.Ports
+		return controllerutil.SetControllerReference(jf, svc, r.Scheme)
+	})
+	return err
+}
+
+func (r *JellyfinReconciler) reconcileGateway(ctx context.Context, jf *jellyfinv1alpha1.Jellyfin) error {
+	routeName := plugins.HTTPRouteName(jf)
+	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: routeName, Namespace: jf.Namespace}}
+
+	if jf.Spec.Gateway == nil {
+		// Best-effort cleanup.
+		if err := r.Delete(ctx, route); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+
+	desired := plugins.BuildHTTPRoute(jf)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
+		route.Labels = desired.Labels
+		route.Annotations = desired.Annotations
+		route.Spec = desired.Spec
+		return controllerutil.SetControllerReference(jf, route, r.Scheme)
 	})
 	return err
 }

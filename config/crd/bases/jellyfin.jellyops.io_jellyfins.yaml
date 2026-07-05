@@ -104,6 +104,43 @@ spec:
                       scan after any change.
                     type: boolean
                 type: object
+              gateway:
+                description: Gateway configures a Gateway API HTTPRoute. Mutually
+                  exclusive with Ingress.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Annotations are applied to the HTTPRoute.
+                    type: object
+                  gatewayRef:
+                    description: GatewayRef identifies the Gateway resource this HTTPRoute
+                      attaches to.
+                    properties:
+                      name:
+                        description: Name is the Gateway resource name.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is the Gateway's namespace. When empty the HTTPRoute's own
+                          namespace is assumed.
+                        type: string
+                      sectionName:
+                        description: SectionName is a specific listener on the Gateway
+                          (e.g. "https").
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  hostname:
+                    description: Hostname is the DNS name the HTTPRoute matches on.
+                    minLength: 1
+                    type: string
+                required:
+                - gatewayRef
+                - hostname
+                type: object
               hardwareAcceleration:
                 description: HardwareAcceleration optionally attaches a GPU/VAAPI
                   device for transcoding.
@@ -162,7 +199,9 @@ spec:
                   x-kubernetes-map-type: atomic
                 type: array
               ingress:
-                description: Ingress optionally exposes the instance over HTTP(S).
+                description: |-
+                  Ingress optionally exposes the instance over HTTP(S). Mutually exclusive
+                  with Gateway.
                 properties:
                   annotations:
                     additionalProperties:
@@ -550,7 +589,116 @@ spec:
                     - name
                     x-kubernetes-list-type: map
                 type: object
+              web:
+                description: Web deploys a separate web-tier (jellyfin-web/nginx)
+                  Deployment and Service.
+                properties:
+                  image:
+                    description: |-
+                      Image is the web-tier container image. When empty the operator does not
+                      default; the CR author is expected to set this to the distro web image.
+                    type: string
+                  podAnnotations:
+                    additionalProperties:
+                      type: string
+                    description: PodAnnotations are merged onto the web pod template
+                      metadata.
+                    type: object
+                  replicas:
+                    description: Replicas is the desired number of web-tier pods.
+                      Defaults to 1.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  resources:
+                    description: Resources sets the web container resource requests/limits.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                  service:
+                    description: Service configures the ClusterIP Service fronting
+                      the web Deployment.
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations are applied to the Service (e.g.
+                          load-balancer hints).
+                        type: object
+                      port:
+                        description: Port is the Service port exposing Jellyfin. Defaults
+                          to 8096.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      type:
+                        description: Type is the Service type. Defaults to ClusterIP.
+                        enum:
+                        - ClusterIP
+                        - NodePort
+                        - LoadBalancer
+                        type: string
+                    type: object
+                type: object
             type: object
+            x-kubernetes-validations:
+            - message: ingress and gateway are mutually exclusive
+              rule: '!(has(self.ingress) && has(self.gateway))'
           status:
             description: status defines the observed state of Jellyfin
             properties:
