@@ -64,6 +64,9 @@ type DesiredLibrary struct {
 	CollectionType string
 	Paths          []string
 	Options        json.RawMessage
+	// PreventWrites indicates the library's media is mounted read-only, so
+	// Jellyfin must not be configured to write metadata/subtitles into it.
+	PreventWrites bool
 }
 
 // LibraryDiff is the result of comparing desired vs existing libraries.

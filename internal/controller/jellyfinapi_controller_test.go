@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -39,6 +41,7 @@ type fakeAPI struct {
 	folders         []jellyfinapi.VirtualFolder
 	added           []jellyfinapi.DesiredLibrary
 	removed         []string
+	optionUpdates   map[string]json.RawMessage
 	bootstrapCalled bool
 }
 
@@ -64,6 +67,13 @@ func (f *fakeAPI) RemoveVirtualFolder(_ context.Context, name string, _ bool) er
 func (f *fakeAPI) AddMediaPath(context.Context, string, string, bool) error    { return nil }
 func (f *fakeAPI) RemoveMediaPath(context.Context, string, string, bool) error { return nil }
 func (f *fakeAPI) RefreshLibraries(context.Context) error                      { return nil }
+func (f *fakeAPI) UpdateLibraryOptions(_ context.Context, id string, options json.RawMessage) error {
+	if f.optionUpdates == nil {
+		f.optionUpdates = map[string]json.RawMessage{}
+	}
+	f.optionUpdates[id] = options
+	return nil
+}
 
 var _ = Describe("JellyfinAPIReconciler", func() {
 	var ns string
@@ -141,5 +151,39 @@ var _ = Describe("JellyfinAPIReconciler", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "ready", Namespace: ns}, &got)).To(Succeed())
 		Expect(got.Status.ManagedLibraries).To(ContainElement("Movies"))
 		Expect(apimeta.IsStatusConditionTrue(got.Status.Conditions, conditionAPIReady)).To(BeTrue())
+	})
+
+	It("enforces write-disabling options on an existing read-only library", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "ro", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{
+				API: &jellyfinv1alpha1.JellyfinAPISpec{Mode: "bootstrap", GeneratedSecretName: "ro-api", ManageLibraries: true},
+				Storage: jellyfinv1alpha1.JellyfinStorage{Media: []jellyfinv1alpha1.MediaFolder{{
+					Name: "multimedia", MountPath: "/media/Multimedia", ReadOnly: true, ExistingClaim: "m",
+					Library: &jellyfinv1alpha1.LibrarySpec{Name: "Multimedia"},
+				}}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		apimeta.SetStatusCondition(&jf.Status.Conditions, metav1.Condition{Type: conditionReady, Status: metav1.ConditionTrue, Reason: "Test", Message: "ready"})
+		Expect(k8sClient.Status().Update(ctx, jf)).To(Succeed())
+
+		// Library already exists with write-enabled options (as Jellyfin defaults them).
+		fake := &fakeAPI{folders: []jellyfinapi.VirtualFolder{{
+			Name: "Multimedia", ItemID: "abc123",
+			LibraryOptions: json.RawMessage(`{"SaveSubtitlesWithMedia":true,"MetadataSavers":null,"PreferredMetadataLanguage":"en"}`),
+		}}}
+		r := &JellyfinAPIReconciler{Client: k8sClient, Scheme: scheme.Scheme,
+			NewAPIClient: func(string, string) (APIClient, error) { return fake, nil }}
+		_, err := reconcileAPI(r, "ro")
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(fake.optionUpdates).To(HaveKey("abc123"))
+		updated := string(fake.optionUpdates["abc123"])
+		Expect(updated).To(ContainSubstring(`"MetadataSavers":[]`))
+		Expect(updated).To(ContainSubstring(`"SaveSubtitlesWithMedia":false`))
+		// Unrelated fields are preserved.
+		Expect(updated).To(ContainSubstring(`"PreferredMetadataLanguage":"en"`))
+		Expect(strings.Count(updated, "MetadataSavers")).To(Equal(1))
 	})
 })

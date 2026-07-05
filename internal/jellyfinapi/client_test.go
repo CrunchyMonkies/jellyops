@@ -185,3 +185,59 @@ func TestDiffLibrariesNoPruneWithoutFlag(t *testing.T) {
 		t.Errorf("prune disabled but ToRemove = %v", diff.ToRemove)
 	}
 }
+
+func TestEnforceReadOnlyOptions(t *testing.T) {
+	// Write-enabled current options (Jellyfin defaults) get the write flags off,
+	// with unrelated fields preserved.
+	cur := json.RawMessage(`{"SaveSubtitlesWithMedia":true,"MetadataSavers":null,"PreferredMetadataLanguage":"en"}`)
+	out, changed, err := EnforceReadOnlyOptions(cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := m["MetadataSavers"].([]any); !ok || len(v) != 0 {
+		t.Errorf("MetadataSavers = %v, want []", m["MetadataSavers"])
+	}
+	if m["SaveSubtitlesWithMedia"] != false {
+		t.Errorf("SaveSubtitlesWithMedia = %v, want false", m["SaveSubtitlesWithMedia"])
+	}
+	if m["SaveLocalMetadata"] != false {
+		t.Errorf("SaveLocalMetadata missing/true")
+	}
+	if m["PreferredMetadataLanguage"] != "en" {
+		t.Errorf("unrelated field not preserved: %v", m["PreferredMetadataLanguage"])
+	}
+}
+
+func TestEnforceReadOnlyOptionsIdempotent(t *testing.T) {
+	// Already-enforced options report no change.
+	cur := json.RawMessage(`{"SaveLocalMetadata":false,"MetadataSavers":[],"SaveSubtitlesWithMedia":false,"SaveLyricsWithMedia":false,"SaveTrickplayWithMedia":false}`)
+	_, changed, err := EnforceReadOnlyOptions(cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("expected changed=false for already-enforced options")
+	}
+}
+
+func TestEnforceReadOnlyOptionsNullInput(t *testing.T) {
+	for _, in := range []json.RawMessage{nil, json.RawMessage(`null`), json.RawMessage(``)} {
+		out, changed, err := EnforceReadOnlyOptions(in)
+		if err != nil {
+			t.Fatalf("input %q: %v", in, err)
+		}
+		if !changed {
+			t.Errorf("input %q: expected changed=true", in)
+		}
+		if !strings.Contains(string(out), `"MetadataSavers":[]`) {
+			t.Errorf("input %q: out = %s", in, out)
+		}
+	}
+}

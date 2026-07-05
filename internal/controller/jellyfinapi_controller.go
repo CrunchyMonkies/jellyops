@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -55,6 +56,7 @@ type APIClient interface {
 	RemoveVirtualFolder(ctx context.Context, name string, refresh bool) error
 	AddMediaPath(ctx context.Context, name, path string, refresh bool) error
 	RemoveMediaPath(ctx context.Context, name, path string, refresh bool) error
+	UpdateLibraryOptions(ctx context.Context, id string, options json.RawMessage) error
 	RefreshLibraries(ctx context.Context) error
 }
 
@@ -235,7 +237,42 @@ func (r *JellyfinAPIReconciler) reconcileLibraries(ctx context.Context, jf *jell
 			return err
 		}
 	}
-	if diff.Changed() && refresh {
+
+	// Enforce write-disabling options for read-only media libraries so Jellyfin
+	// never writes .nfo/subtitles into a read-only mount. Re-list after creates so
+	// newly-created libraries are included with their full (default) options.
+	folders := existing
+	if len(diff.ToCreate) > 0 {
+		if folders, err = cli.ListVirtualFolders(ctx); err != nil {
+			return err
+		}
+	}
+	byName := make(map[string]jellyfinapi.VirtualFolder, len(folders))
+	for _, f := range folders {
+		byName[f.Name] = f
+	}
+	optsChanged := false
+	for _, d := range desired {
+		if !d.PreventWrites {
+			continue
+		}
+		f, ok := byName[d.Name]
+		if !ok || f.ItemID == "" {
+			continue
+		}
+		updated, changed, err := jellyfinapi.EnforceReadOnlyOptions(f.LibraryOptions)
+		if err != nil {
+			return err
+		}
+		if changed {
+			if err := cli.UpdateLibraryOptions(ctx, f.ItemID, updated); err != nil {
+				return err
+			}
+			optsChanged = true
+		}
+	}
+
+	if (diff.Changed() || optsChanged) && refresh {
 		if err := cli.RefreshLibraries(ctx); err != nil {
 			return err
 		}
@@ -266,6 +303,7 @@ func desiredLibraries(jf *jellyfinv1alpha1.Jellyfin) []jellyfinapi.DesiredLibrar
 			Name:           name,
 			CollectionType: mf.Library.CollectionType,
 			Paths:          []string{mf.MountPath},
+			PreventWrites:  mf.ReadOnly,
 		}
 		if mf.Library.Options != nil {
 			lib.Options = mf.Library.Options.Raw

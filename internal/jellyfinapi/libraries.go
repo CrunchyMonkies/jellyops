@@ -18,9 +18,11 @@ package jellyfinapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 )
 
 // ListVirtualFolders returns the instance's libraries.
@@ -67,9 +69,76 @@ func (c *Client) RemoveMediaPath(ctx context.Context, name, path string, refresh
 	return c.do(ctx, http.MethodDelete, "/Library/VirtualFolders/Paths", q, nil, nil)
 }
 
+// UpdateLibraryOptions replaces a library's options (POST
+// /Library/VirtualFolders/LibraryOptions). id is the library's ItemId.
+func (c *Client) UpdateLibraryOptions(ctx context.Context, id string, options json.RawMessage) error {
+	body := map[string]any{"Id": id, "LibraryOptions": options}
+	return c.do(ctx, http.MethodPost, "/Library/VirtualFolders/LibraryOptions", nil, body, nil)
+}
+
 // RefreshLibraries triggers a full library scan.
 func (c *Client) RefreshLibraries(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/Library/Refresh", nil, nil, nil)
+}
+
+// readOnlyLibraryOptions are the LibraryOptions fields the operator forces off so
+// Jellyfin never writes metadata/subtitles into a read-only media folder.
+// MetadataSavers=[] (explicit empty) stops all savers, incl. the NFO saver that
+// runs when the field is null (inheriting the server defaults).
+var readOnlyLibraryOptions = map[string]json.RawMessage{
+	"SaveLocalMetadata":      json.RawMessage(`false`),
+	"MetadataSavers":         json.RawMessage(`[]`),
+	"SaveSubtitlesWithMedia": json.RawMessage(`false`),
+	"SaveLyricsWithMedia":    json.RawMessage(`false`),
+	"SaveTrickplayWithMedia": json.RawMessage(`false`),
+}
+
+// EnforceReadOnlyOptions overlays the write-disabling fields onto a library's
+// current LibraryOptions, preserving every other field. It returns the updated
+// options and whether anything actually changed. A nil/empty current is treated
+// as an empty object.
+func EnforceReadOnlyOptions(current json.RawMessage) (json.RawMessage, bool, error) {
+	opts := map[string]json.RawMessage{}
+	if len(bytesTrim(current)) > 0 {
+		if err := json.Unmarshal(current, &opts); err != nil {
+			return nil, false, err
+		}
+	}
+	changed := false
+	for k, v := range readOnlyLibraryOptions {
+		if cur, ok := opts[k]; !ok || !jsonEqual(cur, v) {
+			opts[k] = v
+			changed = true
+		}
+	}
+	if !changed {
+		return current, false, nil
+	}
+	out, err := json.Marshal(opts)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
+func bytesTrim(b json.RawMessage) []byte {
+	s := strings.TrimSpace(string(b))
+	if s == "null" {
+		return nil
+	}
+	return []byte(s)
+}
+
+// jsonEqual compares two raw JSON values by their decoded form so that, e.g.,
+// `false` and ` false ` (or key-ordered objects) compare equal.
+func jsonEqual(a, b json.RawMessage) bool {
+	var av, bv any
+	if json.Unmarshal(a, &av) != nil || json.Unmarshal(b, &bv) != nil {
+		return false
+	}
+	am, err1 := json.Marshal(av)
+	bm, err2 := json.Marshal(bv)
+	return err1 == nil && err2 == nil && string(am) == string(bm)
 }
 
 func boolStr(b bool) string {
