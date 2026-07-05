@@ -9,24 +9,19 @@ spec:
   jellyfinRef:
     name: home-media
   pluginImage:
-    reference: ghcr.io/example/jellycode-plugin@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    # Plugin-only image-volume payload (meta.json + DLLs at root). Pin by digest;
+    # docker/build-push.sh in the jellycode repo prints the @sha256 value.
+    reference: harbor.bne1.ouchi.com.au/applications/jellyfin-distributed-plugin@sha256:08e00cfab506602110d3d74f99085c4b782f116545b5aae335106f9ae4ef7df5
     pullPolicy: IfNotPresent
   meta:
     guid: b9f8c1a2-3d4e-4f5a-9b6c-7d8e9f0a1b2c
     name: "Distributed Transcoding"
     version: "0.0.1.0"
     targetAbi: "12.0.0.0"
-  injection: imageVolumeCopy # Jellyfin writes meta.json status; see §6.2
-  install: # pre-start setup script; see §6.4
-    runOnce: true
-    # failurePolicy: Ignore is the default (Jellyfin still boots on error)
-    script: |
-      mkdir -p /config/plugins/configurations
-      cp -n /config/plugins/"Distributed Transcoding_0.0.1.0"/defaults/*.xml \
-        /config/plugins/configurations/
+  injection: imageVolumeCopy # staged into a writable /config/plugins dir; see §6.2
   services:
     - name: jellycode-grpc
-      selector: instance # points at the Jellyfin pod
+      selector: instance # points at the Jellyfin pod (hosts the gRPC mesh on :9090)
       ports:
         - name: grpc
           port: 9090
@@ -34,10 +29,25 @@ spec:
   workloads:
     - name: worker
       image:
-        reference: ghcr.io/example/jellycode-worker@sha256:1111111111111111111111111111111111111111111111111111111111111111
+        reference: harbor.bne1.ouchi.com.au/applications/jellyfin-distributed-worker@sha256:63376c1501af55b5e0704063334f1e1ae8b16e0788392cd524d7efd7f7d9c686
       replicas: 3
-      args:
-        - "--server=http://jellycode-grpc.media.svc:9090"
-        - "--ffmpeg=/usr/bin/ffmpeg"
-        - "--max-concurrent=2"
+      env:
+        # The worker image entrypoint is driven by DT_* (DT_WORKER_ID defaults to the pod hostname).
+        - name: DT_SERVER
+          value: "http://jellycode-grpc.media.svc:9090"
+        - name: DT_FFMPEG
+          value: "/usr/bin/ffmpeg"
+        - name: DT_MAX_CONCURRENT
+          value: "2"
+        - name: DT_SCRATCH
+          value: "/tmp/worker"
+      # The operator auto-mounts the bound instance's media (from spec.storage.media)
+      # into this workload, read-only, at the same paths — so only scratch is declared.
+      # Instance media must be RWX/NFS (or ROX) to be multi-attachable to worker pods.
+      volumeMounts:
+        - name: scratch
+          mountPath: /tmp/worker
+      volumes:
+        - name: scratch
+          emptyDir: {}
       terminationGracePeriodSeconds: 120 # allow in-flight transcodes to drain on SIGTERM

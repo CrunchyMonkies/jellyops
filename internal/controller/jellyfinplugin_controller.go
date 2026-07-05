@@ -30,6 +30,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
 	"github.com/crunchymonkies/jellyops/internal/plugins"
@@ -78,7 +80,7 @@ func (r *JellyfinPluginReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	abiOK, abiReason, abiMsg := r.validateABI(&p, instance)
 
 	if abiOK {
-		if err := r.reconcileWorkloads(ctx, &p); err != nil {
+		if err := r.reconcileWorkloads(ctx, &p, instance); err != nil {
 			return ctrl.Result{}, fmt.Errorf("workloads: %w", err)
 		}
 		if err := r.reconcileServices(ctx, &p, instance); err != nil {
@@ -135,9 +137,9 @@ func (r *JellyfinPluginReconciler) validateABI(p *jellyfinv1alpha1.JellyfinPlugi
 	return true, "ABICompatible", fmt.Sprintf("targetAbi %s compatible with server %s", p.Spec.Meta.TargetABI, server)
 }
 
-func (r *JellyfinPluginReconciler) reconcileWorkloads(ctx context.Context, p *jellyfinv1alpha1.JellyfinPlugin) error {
+func (r *JellyfinPluginReconciler) reconcileWorkloads(ctx context.Context, p *jellyfinv1alpha1.JellyfinPlugin, jf *jellyfinv1alpha1.Jellyfin) error {
 	for _, w := range p.Spec.Workloads {
-		desired := plugins.BuildWorkloadDeployment(p, w)
+		desired := plugins.BuildWorkloadDeployment(jf, p, w)
 		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace}}
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
 			dep.Labels = desired.Labels
@@ -285,6 +287,30 @@ func (r *JellyfinPluginReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&jellyfinv1alpha1.JellyfinPlugin{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		// Re-reconcile bound plugins when their instance changes so companion
+		// workloads pick up edits to the instance's media folders.
+		Watches(&jellyfinv1alpha1.Jellyfin{}, handler.EnqueueRequestsFromMapFunc(r.mapInstanceToPlugins)).
 		Named("jellyfinplugin").
 		Complete(r)
+}
+
+// mapInstanceToPlugins enqueues every JellyfinPlugin bound to a changed Jellyfin
+// instance, so their workloads/services reconcile against the new instance state.
+func (r *JellyfinPluginReconciler) mapInstanceToPlugins(ctx context.Context, obj client.Object) []reconcile.Request {
+	jf, ok := obj.(*jellyfinv1alpha1.Jellyfin)
+	if !ok {
+		return nil
+	}
+	bound, err := BoundPlugins(ctx, r.Client, jf)
+	if err != nil {
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(bound))
+	for i := range bound {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      bound[i].Name,
+			Namespace: bound[i].Namespace,
+		}})
+	}
+	return reqs
 }

@@ -6,7 +6,7 @@ metadata:
   labels:
     app.kubernetes.io/name: jellyops
 spec:
-  image: ghcr.io/example/jellyfin:12.0.0-net10
+  image: harbor.bne1.ouchi.com.au/applications/jellyfin-server:12.0.0 # plugin-free v12; tag drives ABI gating
   replicas: 1
   storage:
     config:

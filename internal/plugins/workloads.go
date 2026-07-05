@@ -45,7 +45,10 @@ func workloadSelectorLabels(p *jellyfinv1alpha1.JellyfinPlugin, w jellyfinv1alph
 }
 
 // BuildWorkloadDeployment builds the Deployment for a plugin companion workload.
-func BuildWorkloadDeployment(p *jellyfinv1alpha1.JellyfinPlugin, w jellyfinv1alpha1.PluginWorkload) *appsv1.Deployment {
+// The bound Jellyfin instance (jf) may be nil when the plugin is not yet bound;
+// when present, its media folders are auto-mounted into the workload so the
+// worker sees the same source media at the same paths as the Jellyfin pod.
+func BuildWorkloadDeployment(jf *jellyfinv1alpha1.Jellyfin, p *jellyfinv1alpha1.JellyfinPlugin, w jellyfinv1alpha1.PluginWorkload) *appsv1.Deployment {
 	replicas := int32(1)
 	if w.Replicas != nil {
 		replicas = *w.Replicas
@@ -53,6 +56,12 @@ func BuildWorkloadDeployment(p *jellyfinv1alpha1.JellyfinPlugin, w jellyfinv1alp
 	pull := w.Image.PullPolicy
 	labels := workloadSelectorLabels(p, w)
 	labels[ManagedByLabel] = ManagedByValue
+
+	// Start from the CR-declared volumes/mounts, then auto-inject the bound
+	// instance's media (identity path mapping, spec §8.2). Hand-declared ones win.
+	volumes := append([]corev1.Volume(nil), w.Volumes...)
+	mounts := append([]corev1.VolumeMount(nil), w.VolumeMounts...)
+	volumes, mounts = appendInstanceMedia(jf, volumes, mounts)
 
 	container := corev1.Container{
 		Name:            w.Name,
@@ -63,7 +72,7 @@ func BuildWorkloadDeployment(p *jellyfinv1alpha1.JellyfinPlugin, w jellyfinv1alp
 		Env:             w.Env,
 		Ports:           w.Ports,
 		Resources:       w.Resources,
-		VolumeMounts:    w.VolumeMounts,
+		VolumeMounts:    mounts,
 		SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false)},
 	}
 
@@ -76,13 +85,52 @@ func BuildWorkloadDeployment(p *jellyfinv1alpha1.JellyfinPlugin, w jellyfinv1alp
 				ObjectMeta: metav1.ObjectMeta{Labels: workloadSelectorLabels(p, w)},
 				Spec: corev1.PodSpec{
 					Containers:                    []corev1.Container{container},
-					Volumes:                       w.Volumes,
+					Volumes:                       volumes,
 					TerminationGracePeriodSeconds: w.TerminationGracePeriodSeconds,
 					SecurityContext:               &corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
 				},
 			},
 		},
 	}
+}
+
+// appendInstanceMedia auto-mounts the bound Jellyfin instance's media folders
+// into a companion workload, read-only, at the same paths the Jellyfin pod uses
+// (identity path mapping, spec §8.2), reusing mediaVolumeAndMount so naming and
+// mount paths match the instance exactly. A folder whose volume name or mount
+// path is already declared on the workload is left to the hand-declared value.
+func appendInstanceMedia(jf *jellyfinv1alpha1.Jellyfin, volumes []corev1.Volume, mounts []corev1.VolumeMount) ([]corev1.Volume, []corev1.VolumeMount) {
+	if jf == nil {
+		return volumes, mounts
+	}
+	haveVol := make(map[string]bool, len(volumes))
+	for _, v := range volumes {
+		haveVol[v.Name] = true
+	}
+	havePath := make(map[string]bool, len(mounts))
+	for _, m := range mounts {
+		havePath[m.MountPath] = true
+	}
+	for _, mf := range jf.Spec.Storage.Media {
+		vol, mount := mediaVolumeAndMount(jf, mf)
+		if haveVol[vol.Name] || havePath[mount.MountPath] {
+			continue // hand-declared workload volume/mount takes precedence
+		}
+		// Workers only read source media, so force read-only regardless of the
+		// instance's own read/write setting (also eases RWX/ROX multi-attach).
+		mount.ReadOnly = true
+		if vol.NFS != nil {
+			vol.NFS.ReadOnly = true
+		}
+		if vol.PersistentVolumeClaim != nil {
+			vol.PersistentVolumeClaim.ReadOnly = true
+		}
+		volumes = append(volumes, vol)
+		mounts = append(mounts, mount)
+		haveVol[vol.Name] = true
+		havePath[mount.MountPath] = true
+	}
+	return volumes, mounts
 }
 
 // BuildPluginService builds a companion Service. The selector targets either the
