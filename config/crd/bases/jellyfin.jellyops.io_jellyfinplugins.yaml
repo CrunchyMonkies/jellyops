@@ -932,6 +932,11 @@ spec:
                             More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                           type: object
                       type: object
+                    runtimeClassName:
+                      description: |-
+                        RuntimeClassName selects a RuntimeClass for the workload pod (e.g. "nvidia" so
+                        an NVENC worker gets the NVIDIA container runtime and GPU access).
+                      type: string
                     terminationGracePeriodSeconds:
                       description: |-
                         TerminationGracePeriodSeconds gives the workload time to drain in-flight

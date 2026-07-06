@@ -76,7 +76,7 @@ func BuildWorkloadDeployment(jf *jellyfinv1alpha1.Jellyfin, p *jellyfinv1alpha1.
 		SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false)},
 	}
 
-	return &appsv1.Deployment{
+	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: WorkloadName(p, w), Namespace: p.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -95,6 +95,11 @@ func BuildWorkloadDeployment(jf *jellyfinv1alpha1.Jellyfin, p *jellyfinv1alpha1.
 			},
 		},
 	}
+	if w.RuntimeClassName != "" {
+		rc := w.RuntimeClassName
+		dep.Spec.Template.Spec.RuntimeClassName = &rc
+	}
+	return dep
 }
 
 // appendInstanceMedia auto-mounts the bound Jellyfin instance's media folders

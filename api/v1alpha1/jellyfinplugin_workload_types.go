@@ -124,6 +124,11 @@ type PluginWorkload struct {
 	// +optional
 	PriorityClassName string `json:"priorityClassName,omitempty"`
 
+	// RuntimeClassName selects a RuntimeClass for the workload pod (e.g. "nvidia" so
+	// an NVENC worker gets the NVIDIA container runtime and GPU access).
+	// +optional
+	RuntimeClassName string `json:"runtimeClassName,omitempty"`
+
 	// Autoscaling is a Phase-2 placeholder for HPA hooks.
 	// +optional
 	Autoscaling *WorkloadAutoscaling `json:"autoscaling,omitempty"`
