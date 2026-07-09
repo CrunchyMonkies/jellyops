@@ -85,48 +85,87 @@ func TestBuildHTTPRoute(t *testing.T) {
 		t.Errorf("hostnames = %v, want [jellyfin.example.com]", route.Spec.Hostnames)
 	}
 
-	// Rules: must be 2 rules, /web first, / second.
-	if len(route.Spec.Rules) != 2 {
-		t.Fatalf("rules len = %d, want 2", len(route.Spec.Rules))
+	// Rules: 4 rules — the bare-root "/" -> "/web/" redirect first, then the
+	// /web ConfigurationPage API carve-out (to the server), then /web (web tier),
+	// then / (server).
+	if len(route.Spec.Rules) != 4 {
+		t.Fatalf("rules len = %d, want 4", len(route.Spec.Rules))
 	}
 
-	// Rule 1: /web -> web service.
-	r1 := route.Spec.Rules[0]
+	// Rule 0: exact "/" -> 302 redirect to "/web/" (no backend; a RequestRedirect
+	// filter). Restores stock-server behaviour so clients loading the bare origin
+	// (e.g. the mobile apps' WebView) reach the web client instead of the API docs.
+	rRedirect := route.Spec.Rules[0]
+	if len(rRedirect.Matches) != 1 || rRedirect.Matches[0].Path == nil {
+		t.Fatalf("rule[0] matches = %v, want one path match", rRedirect.Matches)
+	}
+	if *rRedirect.Matches[0].Path.Type != gatewayv1.PathMatchExact || *rRedirect.Matches[0].Path.Value != "/" {
+		t.Errorf("rule[0] path = %v %q, want Exact /", *rRedirect.Matches[0].Path.Type, *rRedirect.Matches[0].Path.Value)
+	}
+	if len(rRedirect.BackendRefs) != 0 {
+		t.Errorf("rule[0] should have no backendRefs, got %d", len(rRedirect.BackendRefs))
+	}
+	if len(rRedirect.Filters) != 1 || rRedirect.Filters[0].Type != gatewayv1.HTTPRouteFilterRequestRedirect {
+		t.Fatalf("rule[0] filters = %v, want one RequestRedirect", rRedirect.Filters)
+	}
+	rr := rRedirect.Filters[0].RequestRedirect
+	if rr == nil || rr.StatusCode == nil || *rr.StatusCode != 302 {
+		t.Errorf("rule[0] redirect statusCode = %v, want 302", rr)
+	}
+	if rr.Path == nil || rr.Path.Type != gatewayv1.FullPathHTTPPathModifier || rr.Path.ReplaceFullPath == nil || *rr.Path.ReplaceFullPath != "/web/" {
+		t.Errorf("rule[0] redirect path = %v, want ReplaceFullPath /web/", rr.Path)
+	}
+
+	// Rule 1: /web/{C,c}onfigurationpage* -> server service (the plugin-config API
+	// that lives under /web but is not a SPA asset).
+	r0 := route.Spec.Rules[1]
+	if len(r0.Matches) != 2 {
+		t.Fatalf("rule[1] matches len = %d, want 2", len(r0.Matches))
+	}
+	if *r0.Matches[0].Path.Value != "/web/ConfigurationPages" {
+		t.Errorf("rule[1] first path = %q, want /web/ConfigurationPages", *r0.Matches[0].Path.Value)
+	}
+	if string(r0.BackendRefs[0].Name) != "home-media" || r0.BackendRefs[0].Port == nil || int(*r0.BackendRefs[0].Port) != 8096 {
+		t.Errorf("rule[1] backend = %q:%v, want home-media:8096", r0.BackendRefs[0].Name, r0.BackendRefs[0].Port)
+	}
+
+	// Rule 2: /web -> web service.
+	r1 := route.Spec.Rules[2]
 	if len(r1.Matches) != 1 {
-		t.Fatalf("rule[0] matches len = %d", len(r1.Matches))
+		t.Fatalf("rule[1] matches len = %d", len(r1.Matches))
 	}
 	if r1.Matches[0].Path == nil || *r1.Matches[0].Path.Type != gatewayv1.PathMatchPathPrefix {
-		t.Error("rule[0] path type should be PathPrefix")
+		t.Error("rule[1] path type should be PathPrefix")
 	}
 	if *r1.Matches[0].Path.Value != "/web" {
-		t.Errorf("rule[0] path = %q, want /web", *r1.Matches[0].Path.Value)
+		t.Errorf("rule[1] path = %q, want /web", *r1.Matches[0].Path.Value)
 	}
 	if len(r1.BackendRefs) != 1 {
-		t.Fatalf("rule[0] backendRefs len = %d", len(r1.BackendRefs))
+		t.Fatalf("rule[1] backendRefs len = %d", len(r1.BackendRefs))
 	}
 	if string(r1.BackendRefs[0].Name) != "home-media-web" {
-		t.Errorf("rule[0] backend name = %q, want home-media-web", r1.BackendRefs[0].Name)
+		t.Errorf("rule[1] backend name = %q, want home-media-web", r1.BackendRefs[0].Name)
 	}
 	if r1.BackendRefs[0].Port == nil || int(*r1.BackendRefs[0].Port) != 80 {
-		t.Errorf("rule[0] backend port = %v, want 80", r1.BackendRefs[0].Port)
+		t.Errorf("rule[1] backend port = %v, want 80", r1.BackendRefs[0].Port)
 	}
 
-	// Rule 2: / -> server service.
-	r2 := route.Spec.Rules[1]
+	// Rule 3: / -> server service.
+	r2 := route.Spec.Rules[3]
 	if len(r2.Matches) != 1 {
-		t.Fatalf("rule[1] matches len = %d", len(r2.Matches))
+		t.Fatalf("rule[3] matches len = %d", len(r2.Matches))
 	}
 	if *r2.Matches[0].Path.Value != "/" {
-		t.Errorf("rule[1] path = %q, want /", *r2.Matches[0].Path.Value)
+		t.Errorf("rule[3] path = %q, want /", *r2.Matches[0].Path.Value)
 	}
 	if len(r2.BackendRefs) != 1 {
-		t.Fatalf("rule[1] backendRefs len = %d", len(r2.BackendRefs))
+		t.Fatalf("rule[3] backendRefs len = %d", len(r2.BackendRefs))
 	}
 	if string(r2.BackendRefs[0].Name) != "home-media" {
-		t.Errorf("rule[1] backend name = %q, want home-media", r2.BackendRefs[0].Name)
+		t.Errorf("rule[3] backend name = %q, want home-media", r2.BackendRefs[0].Name)
 	}
 	if r2.BackendRefs[0].Port == nil || int(*r2.BackendRefs[0].Port) != 8096 {
-		t.Errorf("rule[1] backend port = %v, want 8096", r2.BackendRefs[0].Port)
+		t.Errorf("rule[3] backend port = %v, want 8096", r2.BackendRefs[0].Port)
 	}
 }
 
@@ -156,11 +195,18 @@ func TestHTTPRouteRuleOrderMostSpecificFirst(t *testing.T) {
 	jf := testJellyfinWithGateway()
 	route := BuildHTTPRoute(jf)
 
-	// First rule must be the more specific /web path.
-	if *route.Spec.Rules[0].Matches[0].Path.Value != "/web" {
-		t.Error("first rule must match /web (most specific)")
+	// Order: the exact "/" redirect first, then the /web ConfigurationPage API
+	// carve-out, then /web (web tier), then / (default).
+	if *route.Spec.Rules[0].Matches[0].Path.Type != gatewayv1.PathMatchExact || *route.Spec.Rules[0].Matches[0].Path.Value != "/" {
+		t.Error("first rule must be the exact / -> /web/ redirect")
 	}
-	if *route.Spec.Rules[1].Matches[0].Path.Value != "/" {
-		t.Error("second rule must match / (default)")
+	if *route.Spec.Rules[1].Matches[0].Path.Value != "/web/ConfigurationPages" {
+		t.Error("second rule must match the /web ConfigurationPage carve-out")
+	}
+	if *route.Spec.Rules[2].Matches[0].Path.Value != "/web" {
+		t.Error("third rule must match /web")
+	}
+	if *route.Spec.Rules[3].Matches[0].Path.Value != "/" {
+		t.Error("fourth rule must match / (default)")
 	}
 }

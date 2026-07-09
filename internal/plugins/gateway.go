@@ -52,6 +52,7 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 
 	webPrefix := gatewayv1.PathMatchPathPrefix
 	defaultPrefix := gatewayv1.PathMatchPathPrefix
+	rootExact := gatewayv1.PathMatchExact
 
 	return &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
@@ -66,7 +67,67 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 			},
 			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(gw.Hostname)},
 			Rules: []gatewayv1.HTTPRouteRule{
-				// Rule 1 (most specific): /web -> web-tier Service.
+				// Rule 0 (most specific of all — an Exact match): redirect the bare
+				// root "/" to "/web/". A stock Jellyfin server serves the web client
+				// itself and redirects "/" -> "/web/index.html"; a headless server
+				// build (web client delegated to the separate web tier) instead
+				// redirects "/" to its API docs (/api-docs/swagger). Clients that load
+				// the bare origin — notably the Jellyfin mobile apps, which load the
+				// server root into a WebView and expect the web client — then land on
+				// Swagger and fail ("connection cannot be established"). Restoring the
+				// "/" -> "/web/" redirect at the gateway makes the origin behave like a
+				// stock server. Exact "/" outranks the PathPrefix "/" default below, so
+				// only the bare root is redirected; every API path still reaches the
+				// server.
+				{
+					Matches: []gatewayv1.HTTPRouteMatch{{
+						Path: &gatewayv1.HTTPPathMatch{Type: &rootExact, Value: ptrTo("/")},
+					}},
+					Filters: []gatewayv1.HTTPRouteFilter{{
+						Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+						RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+							StatusCode: ptrTo(302),
+							Path: &gatewayv1.HTTPPathModifier{
+								Type:            gatewayv1.FullPathHTTPPathModifier,
+								ReplaceFullPath: ptrTo("/web/"),
+							},
+						},
+					}},
+				},
+				// Rule 1 (most specific): Jellyfin serves its plugin-configuration
+				// API under /web (GET /web/ConfigurationPages and
+				// /web/configurationpage?name=...). Those are API endpoints, not SPA
+				// assets, so they must go to the server Service even though the web
+				// tier owns the rest of /web. Without this, the dashboard's plugin
+				// drawer fetches HTML instead of JSON and crashes ("r.map is not a
+				// function"). Both casings are matched since the web client uses
+				// mixed casing and the server routes case-insensitively.
+				{
+					// Gateway API PathPrefix matches on whole path segments, so the
+					// plural list endpoint (ConfigurationPages) and the singular page
+					// endpoint (ConfigurationPage) are distinct segments and both must
+					// be listed.
+					//
+					// Match ONLY the PascalCase casing the web client / @jellyfin/sdk
+					// uses for these API calls. The server routes case-insensitively,
+					// but the SPA reuses the LOWERCASE path "/web/configurationpage" as
+					// a client-side route (which must reach the SPA index, not the API).
+					// Matching lowercase here would hijack that route and 404 in-app
+					// navigation to plugin config pages, so it is deliberately excluded.
+					Matches: []gatewayv1.HTTPRouteMatch{
+						{Path: &gatewayv1.HTTPPathMatch{Type: &webPrefix, Value: ptrTo("/web/ConfigurationPages")}},
+						{Path: &gatewayv1.HTTPPathMatch{Type: &webPrefix, Value: ptrTo("/web/ConfigurationPage")}},
+					},
+					BackendRefs: []gatewayv1.HTTPBackendRef{{
+						BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: serverSvcName,
+								Port: &serverPort,
+							},
+						},
+					}},
+				},
+				// Rule 2: /web -> web-tier Service.
 				{
 					Matches: []gatewayv1.HTTPRouteMatch{{
 						Path: &gatewayv1.HTTPPathMatch{
@@ -83,7 +144,7 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 						},
 					}},
 				},
-				// Rule 2 (default): / -> server Service.
+				// Rule 3 (default): / -> server Service.
 				{
 					Matches: []gatewayv1.HTTPRouteMatch{{
 						Path: &gatewayv1.HTTPPathMatch{

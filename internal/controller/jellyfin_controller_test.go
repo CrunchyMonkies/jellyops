@@ -188,13 +188,22 @@ var _ = Describe("JellyfinReconciler", func() {
 		Expect(route.OwnerReferences[0].Kind).To(Equal("Jellyfin"))
 		Expect(route.Spec.Hostnames).To(HaveLen(1))
 		Expect(string(route.Spec.Hostnames[0])).To(Equal("jellyfin.example.com"))
-		Expect(route.Spec.Rules).To(HaveLen(2))
-		// First rule: /web -> web service.
-		Expect(*route.Spec.Rules[0].Matches[0].Path.Value).To(Equal("/web"))
-		Expect(string(route.Spec.Rules[0].BackendRefs[0].Name)).To(Equal("gw-test-web"))
-		// Second rule: / -> server service.
-		Expect(*route.Spec.Rules[1].Matches[0].Path.Value).To(Equal("/"))
+		Expect(route.Spec.Rules).To(HaveLen(4))
+		// Rule 0: exact / -> 302 redirect to /web/ (no backend).
+		Expect(*route.Spec.Rules[0].Matches[0].Path.Type).To(Equal(gatewayv1.PathMatchExact))
+		Expect(*route.Spec.Rules[0].Matches[0].Path.Value).To(Equal("/"))
+		Expect(route.Spec.Rules[0].BackendRefs).To(BeEmpty())
+		Expect(route.Spec.Rules[0].Filters[0].Type).To(Equal(gatewayv1.HTTPRouteFilterRequestRedirect))
+		Expect(*route.Spec.Rules[0].Filters[0].RequestRedirect.Path.ReplaceFullPath).To(Equal("/web/"))
+		// Rule 1: /web ConfigurationPage API carve-out -> server service.
+		Expect(*route.Spec.Rules[1].Matches[0].Path.Value).To(Equal("/web/ConfigurationPages"))
 		Expect(string(route.Spec.Rules[1].BackendRefs[0].Name)).To(Equal("gw-test"))
+		// Rule 2: /web -> web service.
+		Expect(*route.Spec.Rules[2].Matches[0].Path.Value).To(Equal("/web"))
+		Expect(string(route.Spec.Rules[2].BackendRefs[0].Name)).To(Equal("gw-test-web"))
+		// Rule 3: / -> server service.
+		Expect(*route.Spec.Rules[3].Matches[0].Path.Value).To(Equal("/"))
+		Expect(string(route.Spec.Rules[3].BackendRefs[0].Name)).To(Equal("gw-test"))
 	})
 
 	It("deletes the HTTPRoute when spec.gateway is removed", func() {
