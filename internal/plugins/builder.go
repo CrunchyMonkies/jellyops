@@ -138,12 +138,22 @@ func BuildPodTemplateSpec(jf *jellyfinv1alpha1.Jellyfin, plugins []jellyfinv1alp
 			})
 		}
 
-		if p.Spec.Install != nil {
+		// Legacy inline install (escape hatch): only built when a script/command is
+		// actually set. spec.install may now exist solely to supply env/image to the
+		// baked hooks below.
+		if p.Spec.Install != nil && (p.Spec.Install.Script != "" || len(p.Spec.Install.Command) > 0) {
 			c, err := installContainer(image, p)
 			if err != nil {
 				return corev1.PodTemplateSpec{}, fmt.Errorf("plugin %q: %w", p.Name, err)
 			}
 			initContainers = append(initContainers, c)
+		}
+
+		// Standard baked-hook runner: for imageVolumeCopy plugins the operator always
+		// wires a runtime hook container that runs bootstrap.sh (every start) and
+		// firstrun.sh (once) if the image baked them into its root. No-op if absent.
+		if p.Spec.Injection == jellyfinv1alpha1.InjectionImageVolumeCopy {
+			initContainers = append(initContainers, hookContainer(image, p))
 		}
 	}
 
@@ -349,6 +359,94 @@ func indent(s string) string {
 		lines[i] = "  " + l
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// hookContainer builds the standard baked-hook runner init container. For an
+// imageVolumeCopy plugin the operator can't inspect the image at reconcile time,
+// so this container detects the hooks at runtime in the staged plugin dir:
+//   - firstrun.sh runs once per instance (marker-gated under FirstRunMarkerDir),
+//   - bootstrap.sh runs on every pod start.
+//
+// Both are optional (no-op if absent). Config (image/env/volumeMounts/failurePolicy/
+// timeout) is taken from spec.install when present, so a plugin can supply env/secrets
+// without an inline script.
+func hookContainer(defaultImage string, p *jellyfinv1alpha1.JellyfinPlugin) corev1.Container {
+	inst := p.Spec.Install
+
+	image := defaultImage
+	pull := corev1.PullPolicy("")
+	mounts := []corev1.VolumeMount{{Name: ConfigVolumeName, MountPath: ConfigMountPath}}
+	var env []corev1.EnvVar
+	var resources corev1.ResourceRequirements
+	if inst != nil {
+		if inst.Image != nil {
+			image = inst.Image.Reference
+			pull = inst.Image.PullPolicy
+		}
+		mounts = append(mounts, inst.VolumeMounts...)
+		env = append(env, inst.Env...)
+		resources = inst.Resources
+	}
+
+	folder := PluginFolderName(EffectiveMeta(p))
+	wrapper := buildHookWrapper(folder, p.Name, inst)
+
+	return corev1.Container{
+		Name:            hookContainerName(p),
+		Image:           image,
+		ImagePullPolicy: pull,
+		Command:         []string{"sh", "-c", wrapper},
+		Env:             env,
+		VolumeMounts:    mounts,
+		Resources:       resources,
+	}
+}
+
+// buildHookWrapper composes the shell that runs the baked firstrun.sh (once) and
+// bootstrap.sh (every start) from the staged plugin dir, honoring failurePolicy and
+// timeout from spec.install (defaults: fail-open, no timeout).
+func buildHookWrapper(folder, pluginName string, inst *jellyfinv1alpha1.PluginInstall) string {
+	stage := path.Join(PluginsDirPath, folder)
+	marker := path.Join(FirstRunMarkerDir, folder)
+
+	failClosed := inst != nil && inst.FailurePolicy == jellyfinv1alpha1.FailurePolicyFail
+	timeoutPrefix := ""
+	if inst != nil && inst.TimeoutSeconds != nil {
+		timeoutPrefix = fmt.Sprintf("timeout %d ", *inst.TimeoutSeconds)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "STAGE=%s\n", shellQuote(stage))
+	fmt.Fprintf(&b, "MARKER=%s\n", shellQuote(marker))
+
+	// firstrun.sh — once per instance.
+	b.WriteString(`if [ -f "$STAGE/firstrun.sh" ] && [ ! -f "$MARKER" ]; then` + "\n")
+	if failClosed {
+		fmt.Fprintf(&b, "  %ssh \"$STAGE/firstrun.sh\"\n", timeoutPrefix)
+		b.WriteString("  mkdir -p \"$(dirname \"$MARKER\")\"\n  touch \"$MARKER\"\n")
+	} else {
+		fmt.Fprintf(&b, "  if %ssh \"$STAGE/firstrun.sh\"; then\n", timeoutPrefix)
+		b.WriteString("    mkdir -p \"$(dirname \"$MARKER\")\"\n    touch \"$MARKER\"\n")
+		fmt.Fprintf(&b, "  else\n    echo \"jellyops: firstrun for %s failed (failurePolicy=Ignore)\"\n  fi\n", pluginName)
+	}
+	b.WriteString("fi\n")
+
+	// bootstrap.sh — every start.
+	b.WriteString(`if [ -f "$STAGE/bootstrap.sh" ]; then` + "\n")
+	if failClosed {
+		fmt.Fprintf(&b, "  %ssh \"$STAGE/bootstrap.sh\"\n", timeoutPrefix)
+	} else {
+		fmt.Fprintf(&b, "  %ssh \"$STAGE/bootstrap.sh\" || echo \"jellyops: bootstrap for %s failed (failurePolicy=Ignore)\"\n", timeoutPrefix, pluginName)
+	}
+	b.WriteString("fi\n")
+
+	if failClosed {
+		// Fail-closed: any hook error already aborts via the shell's exit status
+		// because we run without swallowing; make it explicit with set -e semantics.
+		return "set -e\n" + b.String()
+	}
+	b.WriteString("exit 0\n")
+	return b.String()
 }
 
 // applyHardwareAccel attaches a transcoding device to the pod/container.

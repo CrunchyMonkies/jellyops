@@ -330,10 +330,13 @@ type JellyfinPluginSpec struct {
     // Optional seed for the plugin's Jellyfin XML configuration (declarative).
     Config *runtime.RawExtension `json:"config,omitempty"`
 
-    // Optional setup step run as an init container BEFORE the Jellyfin container
-    // starts (after any imageVolumeCopy staging). The imperative complement to
-    // Config: use it to run migrations, fetch assets, generate files, or otherwise
-    // prepare the writable /config dir before the app boots. See §6.4.
+    // Optional setup run as init containers BEFORE the Jellyfin container starts
+    // (after any imageVolumeCopy staging). Script/Command are optional inline steps.
+    // For imageVolumeCopy plugins the operator ALSO auto-runs standard hooks baked at
+    // the plugin image root — bootstrap.sh (every start) and firstrun.sh (once per
+    // instance, marker under /config/.jellyops/firstrun/) — using this block's
+    // image/env/volumeMounts/failurePolicy/timeout. So a plugin can ship its setup
+    // logic in its image and the CR only supplies env/secrets here. See §6.4.
     Install *PluginInstall `json:"install,omitempty"`
 }
 

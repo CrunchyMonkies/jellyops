@@ -39,6 +39,18 @@ Two injection modes (`JellyfinPlugin.spec.injection`):
 An optional `spec.install` runs a pre-start setup script as an init container, with
 `runOnce` markers, `failurePolicy` (Ignore/Fail), and `timeoutSeconds` support.
 
+**Standard baked hooks.** For `imageVolumeCopy` plugins the operator also auto-detects
+standard hook scripts baked at the plugin image root and runs them from the staged dir
+(`/config/plugins/<Name_Version>/`) before Jellyfin starts:
+
+- `bootstrap.sh` — runs on **every** pod start.
+- `firstrun.sh` — runs **once per instance** (marker under `/config/.jellyops/firstrun/`).
+
+Both are optional (a no-op if the image didn't bake them). `spec.install` is not required
+to carry a script for this — when its `script`/`command` are omitted it simply provides the
+`image`/`env`/`volumeMounts`/`failurePolicy`/`timeoutSeconds` the hooks run with (so a plugin
+can ship its setup logic in its image and the CR only supplies env/secrets).
+
 > **Runtime prerequisite:** image volumes are beta in Kubernetes **1.33** (GA in 1.36)
 > and require a CRI runtime with image-volume support (containerd/CRI-O). The `ImageVolume`
 > feature gate must be enabled on clusters older than where it defaults on.

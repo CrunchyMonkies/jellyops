@@ -129,6 +129,22 @@ type PluginWorkload struct {
 	// +optional
 	RuntimeClassName string `json:"runtimeClassName,omitempty"`
 
+	// ReadinessProbe gates whether the workload pod is Ready (and therefore counted
+	// toward the WorkloadsReady condition and reachable via a plugin Service). Use it
+	// for workloads that take time to become serviceable (e.g. a Shoko Server that
+	// must open its database before answering :8111).
+	// +optional
+	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
+
+	// LivenessProbe restarts the workload container when it stops responding.
+	// +optional
+	LivenessProbe *corev1.Probe `json:"livenessProbe,omitempty"`
+
+	// StartupProbe holds off the liveness/readiness probes until the workload has
+	// finished a slow start.
+	// +optional
+	StartupProbe *corev1.Probe `json:"startupProbe,omitempty"`
+
 	// Autoscaling is a Phase-2 placeholder for HPA hooks.
 	// +optional
 	Autoscaling *WorkloadAutoscaling `json:"autoscaling,omitempty"`
@@ -162,8 +178,14 @@ type PluginService struct {
 	Type corev1.ServiceType `json:"type,omitempty"`
 }
 
-// PluginInstall describes a setup script run as an init container, ordered
-// before the Jellyfin container starts (and after imageVolumeCopy staging).
+// PluginInstall configures plugin setup that runs as init containers before the
+// Jellyfin container starts (and after imageVolumeCopy staging).
+//
+// Script/Command are optional. When both are omitted, this block simply supplies
+// env/image/volumeMounts/failurePolicy/timeout to the standard baked hooks that
+// jellyops auto-runs for imageVolumeCopy plugins — bootstrap.sh (every start) and
+// firstrun.sh (once per instance), if the plugin image baked them at its root.
+// When Script or Command is set, that inline script also runs as an init container.
 type PluginInstall struct {
 	// Image runs the install container. Defaults to the Jellyfin server image so
 	// the script sees Jellyfin's filesystem layout. Set to the plugin image or a

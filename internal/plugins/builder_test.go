@@ -230,6 +230,91 @@ func TestInstallScriptAndCommandRejected(t *testing.T) {
 	}
 }
 
+func TestHookRunnerPresentForCopy(t *testing.T) {
+	p := plugin("dt", jellyfinv1alpha1.InjectionImageVolumeCopy)
+	pod, err := BuildPodTemplateSpec(baseInstance(), []jellyfinv1alpha1.JellyfinPlugin{p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := findContainer(pod.Spec.InitContainers, "hook-dt")
+	if hook == nil {
+		t.Fatal("hook container missing for imageVolumeCopy")
+	}
+	if findMount(hook.VolumeMounts, ConfigVolumeName) == nil {
+		t.Error("hook must mount config PVC")
+	}
+	w := hook.Command[2]
+	for _, want := range []string{"firstrun.sh", "bootstrap.sh", `"$MARKER"`, "/config/.jellyops/firstrun/", "/config/plugins/Distributed Transcoding_0.0.1.0"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("hook wrapper missing %q: %s", want, w)
+		}
+	}
+	// Fail-open by default.
+	if !strings.Contains(w, "exit 0") || strings.Contains(w, "set -e") {
+		t.Errorf("default hook should be fail-open: %s", w)
+	}
+	// Ordering: staging precedes hook.
+	if idx(pod.Spec.InitContainers, "stage-dt") > idx(pod.Spec.InitContainers, "hook-dt") {
+		t.Error("staging must precede hook")
+	}
+}
+
+func TestHookRunnerAbsentForDirectMount(t *testing.T) {
+	p := plugin("dt", jellyfinv1alpha1.InjectionImageVolume)
+	pod, err := BuildPodTemplateSpec(baseInstance(), []jellyfinv1alpha1.JellyfinPlugin{p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findContainer(pod.Spec.InitContainers, "hook-dt") != nil {
+		t.Error("hook container must not exist for imageVolume mode")
+	}
+}
+
+func TestHookRunnerEnvOnlyInstallNoScript(t *testing.T) {
+	p := plugin("dt", jellyfinv1alpha1.InjectionImageVolumeCopy)
+	p.Spec.Install = &jellyfinv1alpha1.PluginInstall{
+		Image: &jellyfinv1alpha1.ImageSource{Reference: "alpine:3"},
+		Env:   []corev1.EnvVar{{Name: "SHOKO_URL", Value: "http://shoko:8111"}},
+	}
+	pod, err := BuildPodTemplateSpec(baseInstance(), []jellyfinv1alpha1.JellyfinPlugin{p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No inline install container when neither script nor command is set.
+	if findContainer(pod.Spec.InitContainers, "install-dt") != nil {
+		t.Error("install container should be absent when no script/command")
+	}
+	hook := findContainer(pod.Spec.InitContainers, "hook-dt")
+	if hook == nil {
+		t.Fatal("hook container missing")
+	}
+	if hook.Image != "alpine:3" {
+		t.Errorf("hook image = %q, want alpine:3", hook.Image)
+	}
+	if findEnv(hook.Env, "SHOKO_URL") != "http://shoko:8111" {
+		t.Error("hook must carry install.env")
+	}
+}
+
+func TestHookRunnerFailPolicyAndTimeout(t *testing.T) {
+	p := plugin("dt", jellyfinv1alpha1.InjectionImageVolumeCopy)
+	p.Spec.Install = &jellyfinv1alpha1.PluginInstall{
+		FailurePolicy:  jellyfinv1alpha1.FailurePolicyFail,
+		TimeoutSeconds: ptr.To(int32(45)),
+	}
+	pod, _ := BuildPodTemplateSpec(baseInstance(), []jellyfinv1alpha1.JellyfinPlugin{p})
+	w := findContainer(pod.Spec.InitContainers, "hook-dt").Command[2]
+	if !strings.Contains(w, "set -e") {
+		t.Errorf("Fail policy should use set -e: %s", w)
+	}
+	if !strings.Contains(w, "timeout 45 ") {
+		t.Errorf("timeout wrapping missing: %s", w)
+	}
+	if strings.Contains(w, "failurePolicy=Ignore") {
+		t.Errorf("Fail policy should not swallow errors: %s", w)
+	}
+}
+
 func TestMediaInlineNFS(t *testing.T) {
 	jf := baseInstance()
 	jf.Spec.Storage.Media = []jellyfinv1alpha1.MediaFolder{{

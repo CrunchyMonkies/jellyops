@@ -59,8 +59,19 @@ const (
 	PluginsDirPath = "/config/plugins"
 	// InstalledMarkerDir holds runOnce markers keyed by plugin folder name.
 	InstalledMarkerDir = "/config/.jellyops/installed"
+	// FirstRunMarkerDir holds firstrun-hook markers keyed by plugin folder name.
+	// Separate from InstalledMarkerDir (which is for install.runOnce) so the baked
+	// firstrun.sh hook and a custom install can each run-once independently.
+	FirstRunMarkerDir = "/config/.jellyops/firstrun"
 	// StagingSrcBase is where a plugin image volume is mounted for imageVolumeCopy.
 	StagingSrcBase = "/plugins-src"
+
+	// BootstrapHookFile is a standard hook baked at the plugin image root that
+	// jellyops runs on every pod startup (if present) for imageVolumeCopy plugins.
+	BootstrapHookFile = "bootstrap.sh"
+	// FirstRunHookFile is a standard hook baked at the plugin image root that
+	// jellyops runs once per instance (marker-gated) for imageVolumeCopy plugins.
+	FirstRunHookFile = "firstrun.sh"
 
 	// DefaultJellyfinPort is the Jellyfin HTTP port.
 	DefaultJellyfinPort int32 = 8096
@@ -139,6 +150,10 @@ func stagingContainerName(p *jellyfinv1alpha1.JellyfinPlugin) string {
 
 func installContainerName(p *jellyfinv1alpha1.JellyfinPlugin) string {
 	return prefixed("install", p.Name)
+}
+
+func hookContainerName(p *jellyfinv1alpha1.JellyfinPlugin) string {
+	return prefixed("hook", p.Name)
 }
 
 func mediaVolumeName(mf jellyfinv1alpha1.MediaFolder) string {
