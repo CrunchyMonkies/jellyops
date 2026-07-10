@@ -53,6 +53,7 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 	webPrefix := gatewayv1.PathMatchPathPrefix
 	defaultPrefix := gatewayv1.PathMatchPathPrefix
 	rootExact := gatewayv1.PathMatchExact
+	headerExact := gatewayv1.HeaderMatchExact
 
 	return &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
@@ -94,29 +95,60 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 						},
 					}},
 				},
-				// Rule 1 (most specific): Jellyfin serves its plugin-configuration
-				// API under /web (GET /web/ConfigurationPages and
-				// /web/configurationpage?name=...). Those are API endpoints, not SPA
-				// assets, so they must go to the server Service even though the web
-				// tier owns the rest of /web. Without this, the dashboard's plugin
-				// drawer fetches HTML instead of JSON and crashes ("r.map is not a
-				// function"). Both casings are matched since the web client uses
-				// mixed casing and the server routes case-insensitively.
+				// Rule 1a (most specific): a full-page navigation to the SPA route
+				// "/web/configurationpage" (a hard refresh or a directly-opened link)
+				// must load the web client so the SPA can boot and then fetch the page
+				// — it must NOT get the raw config-page HTML fragment. A top-level
+				// browser navigation carries "Sec-Fetch-Mode: navigate"; the SPA's own
+				// data fetch (Rule 1b) does not. So navigations go to the web tier and
+				// only the singular page route needs this carve-out (the plural list
+				// endpoint is never navigated to). Header + path outranks Rule 1b's
+				// path-only match, so this wins for navigations and Rule 1b wins for
+				// the XHR data fetch.
 				{
-					// Gateway API PathPrefix matches on whole path segments, so the
-					// plural list endpoint (ConfigurationPages) and the singular page
-					// endpoint (ConfigurationPage) are distinct segments and both must
-					// be listed.
-					//
-					// Match ONLY the PascalCase casing the web client / @jellyfin/sdk
-					// uses for these API calls. The server routes case-insensitively,
-					// but the SPA reuses the LOWERCASE path "/web/configurationpage" as
-					// a client-side route (which must reach the SPA index, not the API).
-					// Matching lowercase here would hijack that route and 404 in-app
-					// navigation to plugin config pages, so it is deliberately excluded.
+					Matches: []gatewayv1.HTTPRouteMatch{
+						{
+							Path:    &gatewayv1.HTTPPathMatch{Type: &webPrefix, Value: ptrTo("/web/configurationpage")},
+							Headers: []gatewayv1.HTTPHeaderMatch{{Type: &headerExact, Name: "Sec-Fetch-Mode", Value: "navigate"}},
+						},
+						{
+							Path:    &gatewayv1.HTTPPathMatch{Type: &webPrefix, Value: ptrTo("/web/ConfigurationPage")},
+							Headers: []gatewayv1.HTTPHeaderMatch{{Type: &headerExact, Name: "Sec-Fetch-Mode", Value: "navigate"}},
+						},
+					},
+					BackendRefs: []gatewayv1.HTTPBackendRef{{
+						BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: webSvcName,
+								Port: &webPort,
+							},
+						},
+					}},
+				},
+				// Rule 1b: Jellyfin serves its plugin-configuration API under /web
+				// (GET /web/ConfigurationPages and /web/configurationpage?name=...).
+				// Those are API endpoints, not SPA assets, so the SPA's data fetches
+				// must reach the server Service even though the web tier owns the rest
+				// of /web. Without this, the dashboard's plugin drawer fetches HTML
+				// instead of JSON and crashes ("r.map is not a function"), and opening
+				// a plugin config page fetches the SPA index instead of the page HTML
+				// and crashes in loadView ("Cannot read properties of undefined
+				// (reading 'classList')").
+				//
+				// Gateway API PathPrefix matches on whole path segments, so the plural
+				// list endpoint (ConfigurationPages) and the singular page endpoint
+				// (ConfigurationPage) are distinct segments and both must be listed.
+				// Both casings are matched: the new React dashboard fetches the
+				// LOWERCASE "/web/configurationpage" (its SPA route path reused as the
+				// fetch URL), while older callers / the SDK use PascalCase. The server
+				// routes case-insensitively; navigations are already peeled off by
+				// Rule 1a.
+				{
 					Matches: []gatewayv1.HTTPRouteMatch{
 						{Path: &gatewayv1.HTTPPathMatch{Type: &webPrefix, Value: ptrTo("/web/ConfigurationPages")}},
+						{Path: &gatewayv1.HTTPPathMatch{Type: &webPrefix, Value: ptrTo("/web/configurationpages")}},
 						{Path: &gatewayv1.HTTPPathMatch{Type: &webPrefix, Value: ptrTo("/web/ConfigurationPage")}},
+						{Path: &gatewayv1.HTTPPathMatch{Type: &webPrefix, Value: ptrTo("/web/configurationpage")}},
 					},
 					BackendRefs: []gatewayv1.HTTPBackendRef{{
 						BackendRef: gatewayv1.BackendRef{
