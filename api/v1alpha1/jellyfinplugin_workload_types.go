@@ -105,6 +105,15 @@ type PluginWorkload struct {
 	// +optional
 	Volumes []corev1.Volume `json:"volumes,omitempty"`
 
+	// InstanceMedia controls how the bound Jellyfin instance's media folders are
+	// auto-mounted into this workload. When nil, every instance media folder is
+	// mounted read-only at the instance's paths (identity mapping) — the default.
+	// Use it to scope a worker to a subset of libraries and/or grant read-write to
+	// specific ones (e.g. a Shoko Server that organizes only the anime library).
+	// A folder the workload hand-declares in Volumes/VolumeMounts still wins.
+	// +optional
+	InstanceMedia *InstanceMediaSelection `json:"instanceMedia,omitempty"`
+
 	// TerminationGracePeriodSeconds gives the workload time to drain in-flight
 	// work on SIGTERM before deletion.
 	// +optional
@@ -148,6 +157,38 @@ type PluginWorkload struct {
 	// Autoscaling is a Phase-2 placeholder for HPA hooks.
 	// +optional
 	Autoscaling *WorkloadAutoscaling `json:"autoscaling,omitempty"`
+}
+
+// Instance media auto-mount modes for a companion workload.
+const (
+	// InstanceMediaAll mounts every instance media folder (the default).
+	InstanceMediaAll = "All"
+	// InstanceMediaSelected mounts only the folders named in Include.
+	InstanceMediaSelected = "Selected"
+	// InstanceMediaNone mounts no instance media.
+	InstanceMediaNone = "None"
+)
+
+// InstanceMediaSelection scopes which of the bound instance's media folders are
+// auto-mounted into a companion workload, and at what access mode.
+type InstanceMediaSelection struct {
+	// Mode selects the auto-mount policy:
+	//   "All"      - mount every instance media folder (the default when empty).
+	//   "Selected" - mount only the folders named in Include.
+	//   "None"     - do not auto-mount any instance media.
+	// +kubebuilder:validation:Enum=All;Selected;None
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
+	// Include names instance media folders (by MediaFolder.Name) to mount when
+	// Mode is "Selected". Ignored for other modes.
+	// +optional
+	Include []string `json:"include,omitempty"`
+
+	// ReadWrite names instance media folders to mount read-write instead of the
+	// default read-only. A name not among the mounted folders is ignored.
+	// +optional
+	ReadWrite []string `json:"readWrite,omitempty"`
 }
 
 // PluginServiceTarget selects what a plugin Service points at.

@@ -61,7 +61,7 @@ func BuildWorkloadDeployment(jf *jellyfinv1alpha1.Jellyfin, p *jellyfinv1alpha1.
 	// instance's media (identity path mapping, spec §8.2). Hand-declared ones win.
 	volumes := append([]corev1.Volume(nil), w.Volumes...)
 	mounts := append([]corev1.VolumeMount(nil), w.VolumeMounts...)
-	volumes, mounts = appendInstanceMedia(jf, volumes, mounts)
+	volumes, mounts = appendInstanceMedia(jf, w.InstanceMedia, volumes, mounts)
 
 	container := corev1.Container{
 		Name:            w.Name,
@@ -73,6 +73,9 @@ func BuildWorkloadDeployment(jf *jellyfinv1alpha1.Jellyfin, p *jellyfinv1alpha1.
 		Ports:           w.Ports,
 		Resources:       w.Resources,
 		VolumeMounts:    mounts,
+		ReadinessProbe:  w.ReadinessProbe,
+		LivenessProbe:   w.LivenessProbe,
+		StartupProbe:    w.StartupProbe,
 		SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false)},
 	}
 
@@ -103,14 +106,32 @@ func BuildWorkloadDeployment(jf *jellyfinv1alpha1.Jellyfin, p *jellyfinv1alpha1.
 }
 
 // appendInstanceMedia auto-mounts the bound Jellyfin instance's media folders
-// into a companion workload, read-only, at the same paths the Jellyfin pod uses
-// (identity path mapping, spec §8.2), reusing mediaVolumeAndMount so naming and
-// mount paths match the instance exactly. A folder whose volume name or mount
-// path is already declared on the workload is left to the hand-declared value.
-func appendInstanceMedia(jf *jellyfinv1alpha1.Jellyfin, volumes []corev1.Volume, mounts []corev1.VolumeMount) ([]corev1.Volume, []corev1.VolumeMount) {
+// into a companion workload at the same paths the Jellyfin pod uses (identity
+// path mapping, spec §8.2), reusing mediaVolumeAndMount so naming and mount paths
+// match the instance exactly. A folder whose volume name or mount path is already
+// declared on the workload is left to the hand-declared value.
+//
+// sel scopes the auto-mount: nil (or Mode All/"") mounts every folder read-only;
+// Mode Selected mounts only Include-named folders; Mode None mounts nothing. Any
+// folder named in ReadWrite is mounted read-write instead of the default read-only.
+func appendInstanceMedia(jf *jellyfinv1alpha1.Jellyfin, sel *jellyfinv1alpha1.InstanceMediaSelection, volumes []corev1.Volume, mounts []corev1.VolumeMount) ([]corev1.Volume, []corev1.VolumeMount) {
 	if jf == nil {
 		return volumes, mounts
 	}
+
+	mode := jellyfinv1alpha1.InstanceMediaAll
+	var include, readWrite map[string]bool
+	if sel != nil {
+		if sel.Mode != "" {
+			mode = sel.Mode
+		}
+		include = toSet(sel.Include)
+		readWrite = toSet(sel.ReadWrite)
+	}
+	if mode == jellyfinv1alpha1.InstanceMediaNone {
+		return volumes, mounts
+	}
+
 	haveVol := make(map[string]bool, len(volumes))
 	for _, v := range volumes {
 		haveVol[v.Name] = true
@@ -120,18 +141,22 @@ func appendInstanceMedia(jf *jellyfinv1alpha1.Jellyfin, volumes []corev1.Volume,
 		havePath[m.MountPath] = true
 	}
 	for _, mf := range jf.Spec.Storage.Media {
+		if mode == jellyfinv1alpha1.InstanceMediaSelected && !include[mf.Name] {
+			continue // not selected for this workload
+		}
 		vol, mount := mediaVolumeAndMount(jf, mf)
 		if haveVol[vol.Name] || havePath[mount.MountPath] {
 			continue // hand-declared workload volume/mount takes precedence
 		}
-		// Workers only read source media, so force read-only regardless of the
-		// instance's own read/write setting (also eases RWX/ROX multi-attach).
-		mount.ReadOnly = true
+		// Default to read-only (also eases RWX/ROX multi-attach); grant read-write
+		// only to explicitly selected folders (e.g. Shoko organizing the anime lib).
+		ro := !readWrite[mf.Name]
+		mount.ReadOnly = ro
 		if vol.NFS != nil {
-			vol.NFS.ReadOnly = true
+			vol.NFS.ReadOnly = ro
 		}
 		if vol.PersistentVolumeClaim != nil {
-			vol.PersistentVolumeClaim.ReadOnly = true
+			vol.PersistentVolumeClaim.ReadOnly = ro
 		}
 		volumes = append(volumes, vol)
 		mounts = append(mounts, mount)
@@ -139,6 +164,18 @@ func appendInstanceMedia(jf *jellyfinv1alpha1.Jellyfin, volumes []corev1.Volume,
 		havePath[mount.MountPath] = true
 	}
 	return volumes, mounts
+}
+
+// toSet builds a lookup set from a string slice (nil-safe).
+func toSet(items []string) map[string]bool {
+	if len(items) == 0 {
+		return nil
+	}
+	m := make(map[string]bool, len(items))
+	for _, s := range items {
+		m[s] = true
+	}
+	return m
 }
 
 // BuildPluginService builds a companion Service. The selector targets either the

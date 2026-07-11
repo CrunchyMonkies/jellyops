@@ -21,6 +21,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
@@ -153,6 +154,71 @@ func TestBuildWorkloadDeploymentMediaDedup(t *testing.T) {
 	}
 }
 
+func TestInstanceMediaSelectedAndReadWrite(t *testing.T) {
+	p := testPlugin()
+	jf := testInstanceWithMedia() // movies (nfs) + library (pvc)
+	w := jellyfinv1alpha1.PluginWorkload{
+		Name:  "shoko-server",
+		Image: jellyfinv1alpha1.ImageSource{Reference: "r"},
+		InstanceMedia: &jellyfinv1alpha1.InstanceMediaSelection{
+			Mode:      jellyfinv1alpha1.InstanceMediaSelected,
+			Include:   []string{"library"},
+			ReadWrite: []string{"library"},
+		},
+	}
+	dep := BuildWorkloadDeployment(jf, p, w)
+	mounts := dep.Spec.Template.Spec.Containers[0].VolumeMounts
+	vols := dep.Spec.Template.Spec.Volumes
+
+	// Only the selected library is mounted; movies is excluded entirely.
+	if len(mounts) != 1 || len(vols) != 1 {
+		t.Fatalf("mounts=%d vols=%d, want 1/1 (only selected library)", len(mounts), len(vols))
+	}
+	if mounts[0].MountPath != "/media/library" {
+		t.Fatalf("mount path = %q, want /media/library", mounts[0].MountPath)
+	}
+	if mounts[0].ReadOnly {
+		t.Error("selected read-write library mount must not be read-only")
+	}
+	if pv := vols[0].PersistentVolumeClaim; pv == nil || pv.ReadOnly {
+		t.Errorf("library pvc should be read-write: %+v", pv)
+	}
+	for _, m := range mounts {
+		if m.MountPath == "/media/movies" {
+			t.Error("movies must not be mounted when not selected")
+		}
+	}
+}
+
+func TestInstanceMediaSelectedDefaultsReadOnly(t *testing.T) {
+	p := testPlugin()
+	jf := testInstanceWithMedia()
+	w := jellyfinv1alpha1.PluginWorkload{
+		Name:          "shoko-server",
+		Image:         jellyfinv1alpha1.ImageSource{Reference: "r"},
+		InstanceMedia: &jellyfinv1alpha1.InstanceMediaSelection{Mode: jellyfinv1alpha1.InstanceMediaSelected, Include: []string{"movies"}},
+	}
+	dep := BuildWorkloadDeployment(jf, p, w)
+	mounts := dep.Spec.Template.Spec.Containers[0].VolumeMounts
+	if len(mounts) != 1 || mounts[0].MountPath != "/media/movies" || !mounts[0].ReadOnly {
+		t.Fatalf("want only /media/movies read-only, got %+v", mounts)
+	}
+}
+
+func TestInstanceMediaNone(t *testing.T) {
+	p := testPlugin()
+	jf := testInstanceWithMedia()
+	w := jellyfinv1alpha1.PluginWorkload{
+		Name:          "worker",
+		Image:         jellyfinv1alpha1.ImageSource{Reference: "r"},
+		InstanceMedia: &jellyfinv1alpha1.InstanceMediaSelection{Mode: jellyfinv1alpha1.InstanceMediaNone},
+	}
+	dep := BuildWorkloadDeployment(jf, p, w)
+	if n := len(dep.Spec.Template.Spec.Volumes); n != 0 {
+		t.Errorf("Mode None should mount no media, got %d volumes", n)
+	}
+}
+
 func TestBuildPluginServiceSelector(t *testing.T) {
 	p := testPlugin()
 
@@ -177,5 +243,35 @@ func TestBuildPluginServiceSelector(t *testing.T) {
 	}
 	if _, err := BuildPluginService(p, jellyfinv1alpha1.PluginService{Name: "x", Selector: "bogus"}, "i"); err == nil {
 		t.Error("expected error for unknown selector")
+	}
+}
+
+func TestBuildWorkloadDeploymentWiresProbes(t *testing.T) {
+	p := testPlugin()
+	jf := &jellyfinv1alpha1.Jellyfin{ObjectMeta: metav1.ObjectMeta{Name: "home", Namespace: "media"}}
+	readiness := &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{Path: "/api/v3/Init/Status", Port: intstr.FromInt(8111)},
+		},
+		PeriodSeconds: 10,
+	}
+	liveness := &corev1.Probe{ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt(8111)}}}
+	startup := &corev1.Probe{ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt(8111)}}, FailureThreshold: 30}
+	w := jellyfinv1alpha1.PluginWorkload{
+		Name:           "shoko-server",
+		Image:          jellyfinv1alpha1.ImageSource{Reference: "ghcr.io/shokoanime/server"},
+		ReadinessProbe: readiness,
+		LivenessProbe:  liveness,
+		StartupProbe:   startup,
+	}
+	c := BuildWorkloadDeployment(jf, p, w).Spec.Template.Spec.Containers[0]
+	if c.ReadinessProbe != readiness {
+		t.Errorf("readiness probe not wired to container")
+	}
+	if c.LivenessProbe != liveness {
+		t.Errorf("liveness probe not wired to container")
+	}
+	if c.StartupProbe != startup {
+		t.Errorf("startup probe not wired to container")
 	}
 }
