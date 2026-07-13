@@ -210,6 +210,63 @@ func TestBuildHTTPRouteMinimal(t *testing.T) {
 	}
 }
 
+// TestBuildHTTPRouteSSO verifies gateway-level SSO auto-login redirect behaviour.
+func TestBuildHTTPRouteSSO(t *testing.T) {
+	tests := []struct {
+		name             string
+		sso              *jellyfinv1alpha1.GatewaySSO
+		wantRedirectPath string
+	}{
+		{
+			name:             "SSO nil — default redirect to /web/",
+			sso:              nil,
+			wantRedirectPath: "/web/",
+		},
+		{
+			name:             "AutoLoginRedirect true — default authorize path",
+			sso:              &jellyfinv1alpha1.GatewaySSO{AutoLoginRedirect: true},
+			wantRedirectPath: "/sso/authorize",
+		},
+		{
+			name:             "AutoLoginRedirect false — redirect to /web/ regardless",
+			sso:              &jellyfinv1alpha1.GatewaySSO{AutoLoginRedirect: false, AuthorizePath: "/sso/authorize"},
+			wantRedirectPath: "/web/",
+		},
+		{
+			name:             "AutoLoginRedirect true with custom AuthorizePath",
+			sso:              &jellyfinv1alpha1.GatewaySSO{AutoLoginRedirect: true, AuthorizePath: "/auth/oidc/start"},
+			wantRedirectPath: "/auth/oidc/start",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			jf := testJellyfinWithGateway()
+			jf.Spec.Gateway.SSO = tc.sso
+			route := BuildHTTPRoute(jf)
+
+			// Rule 0 is always the exact "/" redirect.
+			r0 := route.Spec.Rules[0]
+			if len(r0.Matches) != 1 || r0.Matches[0].Path == nil {
+				t.Fatalf("rule[0] matches = %v, want one path match", r0.Matches)
+			}
+			if *r0.Matches[0].Path.Type != gatewayv1.PathMatchExact || *r0.Matches[0].Path.Value != "/" {
+				t.Errorf("rule[0] path = %v %q, want Exact /", *r0.Matches[0].Path.Type, *r0.Matches[0].Path.Value)
+			}
+			if len(r0.Filters) != 1 || r0.Filters[0].Type != gatewayv1.HTTPRouteFilterRequestRedirect {
+				t.Fatalf("rule[0] filters = %v, want one RequestRedirect", r0.Filters)
+			}
+			rr := r0.Filters[0].RequestRedirect
+			if rr == nil || rr.StatusCode == nil || *rr.StatusCode != 302 {
+				t.Errorf("rule[0] redirect statusCode = %v, want 302", rr)
+			}
+			if rr.Path == nil || rr.Path.ReplaceFullPath == nil || *rr.Path.ReplaceFullPath != tc.wantRedirectPath {
+				t.Errorf("rule[0] redirect path = %v, want %q", rr.Path, tc.wantRedirectPath)
+			}
+		})
+	}
+}
+
 func TestHTTPRouteRuleOrderMostSpecificFirst(t *testing.T) {
 	jf := testJellyfinWithGateway()
 	route := BuildHTTPRoute(jf)

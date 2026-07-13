@@ -80,6 +80,12 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 				// stock server. Exact "/" outranks the PathPrefix "/" default below, so
 				// only the bare root is redirected; every API path still reaches the
 				// server.
+				//
+				// When SSO.AutoLoginRedirect is enabled the redirect target is instead
+				// the OAuth2 plugin's authorize endpoint (default "/sso/authorize"), so
+				// unauthenticated visitors are sent straight to Keycloak. The /sso/*
+				// paths reach the server Service via the existing PathPrefix "/" catch-all
+				// rule (Rule 3), so no additional route rule is needed.
 				{
 					Matches: []gatewayv1.HTTPRouteMatch{{
 						Path: &gatewayv1.HTTPPathMatch{Type: &rootExact, Value: ptrTo("/")},
@@ -90,7 +96,7 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 							StatusCode: ptrTo(302),
 							Path: &gatewayv1.HTTPPathModifier{
 								Type:            gatewayv1.FullPathHTTPPathModifier,
-								ReplaceFullPath: ptrTo("/web/"),
+								ReplaceFullPath: ptrTo(rootRedirectTarget(gw)),
 							},
 						},
 					}},
@@ -196,6 +202,19 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 			},
 		},
 	}
+}
+
+// rootRedirectTarget returns the path that the bare "/" entry redirect points to.
+// When SSO auto-login is enabled it returns the OAuth2 authorize endpoint; otherwise
+// it returns "/web/" to preserve the default stock-server behaviour.
+func rootRedirectTarget(gw *jellyfinv1alpha1.GatewaySpec) string {
+	if gw.SSO != nil && gw.SSO.AutoLoginRedirect {
+		if gw.SSO.AuthorizePath != "" {
+			return gw.SSO.AuthorizePath
+		}
+		return "/sso/authorize"
+	}
+	return "/web/"
 }
 
 func ptrTo[T any](v T) *T {

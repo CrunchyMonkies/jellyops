@@ -137,6 +137,21 @@ spec:
                     description: Hostname is the DNS name the HTTPRoute matches on.
                     minLength: 1
                     type: string
+                  sso:
+                    description: SSO configures OIDC/Keycloak auto-login behaviour
+                      at the gateway.
+                    properties:
+                      authorizePath:
+                        default: /sso/authorize
+                        description: AuthorizePath is the plugin authorize endpoint.
+                          Defaults to "/sso/authorize".
+                        type: string
+                      autoLoginRedirect:
+                        description: |-
+                          AutoLoginRedirect, when true, makes the entry route redirect to AuthorizePath
+                          instead of /web/, so unauthenticated visitors are sent straight to Keycloak.
+                        type: boolean
+                    type: object
                 required:
                 - gatewayRef
                 - hostname

@@ -57,6 +57,23 @@ type GatewaySpec struct {
 	// Annotations are applied to the HTTPRoute.
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// SSO configures OIDC/Keycloak auto-login behaviour at the gateway.
+	// +optional
+	SSO *GatewaySSO `json:"sso,omitempty"`
+}
+
+// GatewaySSO toggles gateway-level auto-login redirect to the OAuth2 plugin's authorize endpoint.
+type GatewaySSO struct {
+	// AutoLoginRedirect, when true, makes the entry route redirect to AuthorizePath
+	// instead of /web/, so unauthenticated visitors are sent straight to Keycloak.
+	// +optional
+	AutoLoginRedirect bool `json:"autoLoginRedirect,omitempty"`
+
+	// AuthorizePath is the plugin authorize endpoint. Defaults to "/sso/authorize".
+	// +optional
+	// +kubebuilder:default="/sso/authorize"
+	AuthorizePath string `json:"authorizePath,omitempty"`
 }
 
 // GatewayReference identifies a Gateway resource.
