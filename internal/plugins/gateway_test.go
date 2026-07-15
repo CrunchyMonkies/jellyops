@@ -267,6 +267,69 @@ func TestBuildHTTPRouteSSO(t *testing.T) {
 	}
 }
 
+// TestBuildHTTPRouteNonSplit verifies that when Spec.Web is nil (single-tier
+// mode, server serves the web client itself), the HTTPRoute contains only two
+// rules: the bare-root redirect and the catch-all to the server Service. No
+// rule may reference the web Service.
+func TestBuildHTTPRouteNonSplit(t *testing.T) {
+	jf := &jellyfinv1alpha1.Jellyfin{
+		ObjectMeta: metav1.ObjectMeta{Name: "home-media", Namespace: "media"},
+		Spec: jellyfinv1alpha1.JellyfinSpec{
+			// Web is nil — non-split / single-tier mode.
+			Gateway: &jellyfinv1alpha1.GatewaySpec{
+				GatewayRef: jellyfinv1alpha1.GatewayReference{Name: "main-gw"},
+				Hostname:   "jellyfin.example.com",
+			},
+		},
+	}
+	route := BuildHTTPRoute(jf)
+
+	// Exactly 2 rules: root redirect + catch-all to server.
+	if len(route.Spec.Rules) != 2 {
+		t.Fatalf("non-split: rules len = %d, want 2", len(route.Spec.Rules))
+	}
+
+	// Rule 0: exact "/" -> 302 redirect.
+	r0 := route.Spec.Rules[0]
+	if len(r0.Matches) != 1 || r0.Matches[0].Path == nil {
+		t.Fatalf("rule[0] matches = %v, want one path match", r0.Matches)
+	}
+	if *r0.Matches[0].Path.Type != gatewayv1.PathMatchExact || *r0.Matches[0].Path.Value != "/" {
+		t.Errorf("rule[0] path = %v %q, want Exact /", *r0.Matches[0].Path.Type, *r0.Matches[0].Path.Value)
+	}
+	if len(r0.Filters) != 1 || r0.Filters[0].Type != gatewayv1.HTTPRouteFilterRequestRedirect {
+		t.Fatalf("rule[0] filters = %v, want one RequestRedirect", r0.Filters)
+	}
+	if len(r0.BackendRefs) != 0 {
+		t.Errorf("rule[0] should have no backendRefs, got %d", len(r0.BackendRefs))
+	}
+
+	// Rule 1: PathPrefix "/" -> server Service (all traffic, including /web).
+	r1 := route.Spec.Rules[1]
+	if len(r1.Matches) != 1 || r1.Matches[0].Path == nil {
+		t.Fatalf("rule[1] matches = %v, want one path match", r1.Matches)
+	}
+	if *r1.Matches[0].Path.Type != gatewayv1.PathMatchPathPrefix || *r1.Matches[0].Path.Value != "/" {
+		t.Errorf("rule[1] path = %v %q, want PathPrefix /", *r1.Matches[0].Path.Type, *r1.Matches[0].Path.Value)
+	}
+	if len(r1.BackendRefs) != 1 || string(r1.BackendRefs[0].Name) != "home-media" {
+		t.Errorf("rule[1] backend = %q, want home-media (server Service)", r1.BackendRefs[0].Name)
+	}
+	if r1.BackendRefs[0].Port == nil || int(*r1.BackendRefs[0].Port) != int(DefaultJellyfinPort) {
+		t.Errorf("rule[1] backend port = %v, want %d", r1.BackendRefs[0].Port, DefaultJellyfinPort)
+	}
+
+	// No rule must reference the web Service.
+	webSvc := WebServiceName(jf)
+	for i, rule := range route.Spec.Rules {
+		for _, ref := range rule.BackendRefs {
+			if string(ref.Name) == webSvc {
+				t.Errorf("rule[%d] references web Service %q; non-split mode must not emit web-tier rules", i, webSvc)
+			}
+		}
+	}
+}
+
 func TestHTTPRouteRuleOrderMostSpecificFirst(t *testing.T) {
 	jf := testJellyfinWithGateway()
 	route := BuildHTTPRoute(jf)
