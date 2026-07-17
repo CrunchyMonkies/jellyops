@@ -21,7 +21,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 
 	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
 )
@@ -98,10 +97,15 @@ func BuildWebDeployment(jf *jellyfinv1alpha1.Jellyfin) *appsv1.Deployment {
 			InitialDelaySeconds: 15,
 			PeriodSeconds:       20,
 		},
-		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr.To(false),
+	}
+
+	podSpec := corev1.PodSpec{
+		Containers: []corev1.Container{container},
+		SecurityContext: &corev1.PodSecurityContext{
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		},
 	}
+	applyPodSecurity(&podSpec.Containers[0], &podSpec, jf.Spec.PodSecurity)
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -117,12 +121,7 @@ func BuildWebDeployment(jf *jellyfinv1alpha1.Jellyfin) *appsv1.Deployment {
 					Labels:      WebSelectorLabels(jf),
 					Annotations: web.PodAnnotations,
 				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{container},
-					SecurityContext: &corev1.PodSecurityContext{
-						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-					},
-				},
+				Spec: podSpec,
 			},
 		},
 	}

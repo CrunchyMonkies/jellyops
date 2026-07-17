@@ -89,9 +89,6 @@ func BuildPodTemplateSpec(jf *jellyfinv1alpha1.Jellyfin, plugins []jellyfinv1alp
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: ConfigVolumeName, MountPath: ConfigMountPath},
 		},
-		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr.To(false),
-		},
 	}
 
 	volumes := []corev1.Volume{configVolume(jf)}
@@ -183,6 +180,10 @@ func BuildPodTemplateSpec(jf *jellyfinv1alpha1.Jellyfin, plugins []jellyfinv1alp
 		},
 	}
 
+	applyPodSecurity(&podSpec.Containers[0], &podSpec, jf.Spec.PodSecurity)
+	for i := range podSpec.InitContainers {
+		applyContainerSecurity(&podSpec.InitContainers[i], jf.Spec.PodSecurity)
+	}
 	applyHardwareAccel(&podSpec, jf.Spec.HardwareAcceleration)
 
 	return corev1.PodTemplateSpec{
@@ -289,7 +290,7 @@ func stagingContainer(defaultImage string, p *jellyfinv1alpha1.JellyfinPlugin) c
 		pull = corev1.PullIfNotPresent
 	}
 
-	cmd := fmt.Sprintf("set -e\nmkdir -p %s\ncp -a %s/. %s/",
+	cmd := fmt.Sprintf("set -e\nmkdir -p %s\ncp -r %s/. %s/",
 		shellQuote(dest), shellQuote(from), shellQuote(dest))
 
 	return corev1.Container{

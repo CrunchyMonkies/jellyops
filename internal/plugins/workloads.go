@@ -23,7 +23,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
 )
@@ -76,8 +75,23 @@ func BuildWorkloadDeployment(jf *jellyfinv1alpha1.Jellyfin, p *jellyfinv1alpha1.
 		ReadinessProbe:  w.ReadinessProbe,
 		LivenessProbe:   w.LivenessProbe,
 		StartupProbe:    w.StartupProbe,
-		SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false)},
 	}
+
+	podSpec := corev1.PodSpec{
+		Containers:                    []corev1.Container{container},
+		Volumes:                       volumes,
+		NodeSelector:                  w.NodeSelector,
+		Tolerations:                   w.Tolerations,
+		PriorityClassName:             w.PriorityClassName,
+		TerminationGracePeriodSeconds: w.TerminationGracePeriodSeconds,
+		SecurityContext:               &corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+	}
+
+	effective := w.PodSecurity
+	if effective == nil && jf != nil {
+		effective = jf.Spec.PodSecurity
+	}
+	applyPodSecurity(&podSpec.Containers[0], &podSpec, effective)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: WorkloadName(p, w), Namespace: p.Namespace, Labels: labels},
@@ -86,15 +100,7 @@ func BuildWorkloadDeployment(jf *jellyfinv1alpha1.Jellyfin, p *jellyfinv1alpha1.
 			Selector: &metav1.LabelSelector{MatchLabels: workloadSelectorLabels(p, w)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: workloadSelectorLabels(p, w)},
-				Spec: corev1.PodSpec{
-					Containers:                    []corev1.Container{container},
-					Volumes:                       volumes,
-					NodeSelector:                  w.NodeSelector,
-					Tolerations:                   w.Tolerations,
-					PriorityClassName:             w.PriorityClassName,
-					TerminationGracePeriodSeconds: w.TerminationGracePeriodSeconds,
-					SecurityContext:               &corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
-				},
+				Spec:       podSpec,
 			},
 		},
 	}

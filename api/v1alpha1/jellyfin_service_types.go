@@ -83,3 +83,29 @@ type HardwareAccel struct {
 	// +optional
 	RuntimeClassName string `json:"runtimeClassName,omitempty"`
 }
+
+// PodSecuritySpec overrides the operator's hardened pod-security defaults.
+// When omitted, every managed pod runs non-root (UID/GID 1000) with all
+// capabilities dropped.
+type PodSecuritySpec struct {
+	// RunAsNonRoot controls the pod/container non-root enforcement. Defaults to true.
+	// +optional
+	RunAsNonRoot *bool `json:"runAsNonRoot,omitempty"`
+
+	// RunAsUser is the UID for the pod/container. Defaults to 1000.
+	// +optional
+	RunAsUser *int64 `json:"runAsUser,omitempty"`
+
+	// RunAsGroup is the primary GID for the pod/container. Defaults to 1000.
+	// +optional
+	RunAsGroup *int64 `json:"runAsGroup,omitempty"`
+
+	// FsGroup is the filesystem group applied to all volumes. Defaults to 1000.
+	// +optional
+	FsGroup *int64 `json:"fsGroup,omitempty"`
+
+	// SupplementalGroups are additional GIDs applied to the pod (merged with
+	// any groups added by hardware acceleration).
+	// +optional
+	SupplementalGroups []int64 `json:"supplementalGroups,omitempty"`
+}

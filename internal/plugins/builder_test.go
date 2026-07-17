@@ -145,7 +145,7 @@ func TestImageVolumeCopyInjection(t *testing.T) {
 	}
 	// The copy command targets the plugins dir.
 	joined := strings.Join(stage.Command, " ")
-	if !strings.Contains(joined, "cp -a") || !strings.Contains(joined, "Distributed Transcoding_0.0.1.0") {
+	if !strings.Contains(joined, "cp -r") || !strings.Contains(joined, "Distributed Transcoding_0.0.1.0") {
 		t.Errorf("unexpected staging command: %q", joined)
 	}
 	// Jellyfin must NOT mount the image volume in copy mode.
