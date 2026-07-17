@@ -119,6 +119,22 @@ func BuildPodTemplateSpec(jf *jellyfinv1alpha1.Jellyfin, plugins []jellyfinv1alp
 		jellyfin.VolumeMounts = append(jellyfin.VolumeMounts, mount)
 	}
 
+	// Web-as-volume mode: mount the web image read-only into the server pod and
+	// host /web from it, instead of a separate nginx web tier. The server then
+	// serves /web itself, so server-side static-file plugins (File Transformation)
+	// can transform the web client. Overrides the fork image's baked --nowebclient.
+	if web := jf.Spec.Web; web != nil && web.EffectiveMode() == jellyfinv1alpha1.WebModeVolume {
+		volumes = append(volumes, webContentVolume(web))
+		jellyfin.VolumeMounts = append(jellyfin.VolumeMounts, corev1.VolumeMount{
+			Name:      WebContentVolumeName,
+			MountPath: WebContentMountPath,
+			SubPath:   web.SubPath,
+			ReadOnly:  true,
+		})
+		jellyfin.Command = []string{DefaultJellyfinCommand}
+		jellyfin.Env = append(jellyfin.Env, corev1.EnvVar{Name: "JELLYFIN_WEB_DIR", Value: WebContentMountPath})
+	}
+
 	var initContainers []corev1.Container
 
 	// Per-plugin image volumes + injection + install.
@@ -233,6 +249,24 @@ func imageVolume(p *jellyfinv1alpha1.JellyfinPlugin) corev1.Volume {
 		VolumeSource: corev1.VolumeSource{
 			Image: &corev1.ImageVolumeSource{
 				Reference:  p.Spec.PluginImage.Reference,
+				PullPolicy: pull,
+			},
+		},
+	}
+}
+
+// webContentVolume builds the read-only image volume that holds the web client
+// for web-as-volume mode (spec.web.mode: volume).
+func webContentVolume(web *jellyfinv1alpha1.WebSpec) corev1.Volume {
+	pull := web.PullPolicy
+	if pull == "" {
+		pull = corev1.PullIfNotPresent
+	}
+	return corev1.Volume{
+		Name: WebContentVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Image: &corev1.ImageVolumeSource{
+				Reference:  web.Image,
 				PullPolicy: pull,
 			},
 		},

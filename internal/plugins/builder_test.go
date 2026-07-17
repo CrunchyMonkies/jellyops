@@ -416,3 +416,69 @@ func idx(cs []corev1.Container, name string) int {
 	}
 	return -1
 }
+
+func TestBuildPodTemplateSpec_WebVolumeMode(t *testing.T) {
+	jf := baseInstance()
+	jf.Spec.Web = &jellyfinv1alpha1.WebSpec{
+		Mode:    jellyfinv1alpha1.WebModeVolume,
+		Image:   "ghcr.io/crunchymonkies/jellyfin-web:vtest",
+		SubPath: "usr/share/nginx/html/web",
+	}
+
+	pod, err := BuildPodTemplateSpec(jf, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	vol := findVolume(pod.Spec.Volumes, WebContentVolumeName)
+	if vol == nil {
+		t.Fatalf("web content volume %q not found", WebContentVolumeName)
+	}
+	if vol.Image == nil || vol.Image.Reference != "ghcr.io/crunchymonkies/jellyfin-web:vtest" {
+		t.Fatalf("web volume image source wrong: %+v", vol.VolumeSource)
+	}
+	if vol.Image.PullPolicy != corev1.PullIfNotPresent {
+		t.Fatalf("expected default IfNotPresent pull policy, got %q", vol.Image.PullPolicy)
+	}
+
+	c := findContainer(pod.Spec.Containers, JellyfinContainerName)
+	if c == nil {
+		t.Fatalf("jellyfin container not found")
+	}
+	m := findMount(c.VolumeMounts, WebContentVolumeName)
+	if m == nil {
+		t.Fatalf("web content mount not found")
+	}
+	if m.MountPath != WebContentMountPath || m.SubPath != "usr/share/nginx/html/web" || !m.ReadOnly {
+		t.Fatalf("web mount wrong: %+v", *m)
+	}
+	if len(c.Command) != 1 || c.Command[0] != DefaultJellyfinCommand {
+		t.Fatalf("expected command override %v, got %v", []string{DefaultJellyfinCommand}, c.Command)
+	}
+	var gotWebDir string
+	for _, e := range c.Env {
+		if e.Name == "JELLYFIN_WEB_DIR" {
+			gotWebDir = e.Value
+		}
+	}
+	if gotWebDir != WebContentMountPath {
+		t.Fatalf("expected JELLYFIN_WEB_DIR=%q, got %q", WebContentMountPath, gotWebDir)
+	}
+}
+
+func TestBuildPodTemplateSpec_WebDeploymentModeNoServerVolume(t *testing.T) {
+	jf := baseInstance()
+	jf.Spec.Web = &jellyfinv1alpha1.WebSpec{Image: "ghcr.io/crunchymonkies/jellyfin-web:vtest"} // Mode empty => deployment
+
+	pod, err := BuildPodTemplateSpec(jf, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if findVolume(pod.Spec.Volumes, WebContentVolumeName) != nil {
+		t.Fatalf("deployment mode must not add a web content volume to the server pod")
+	}
+	c := findContainer(pod.Spec.Containers, JellyfinContainerName)
+	if c != nil && len(c.Command) != 0 {
+		t.Fatalf("deployment mode must not override the server command, got %v", c.Command)
+	}
+}

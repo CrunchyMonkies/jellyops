@@ -18,15 +18,47 @@ package v1alpha1
 
 import corev1 "k8s.io/api/core/v1"
 
-// WebSpec configures a separate web-tier Deployment serving the Jellyfin web
-// client (typically an nginx-based jellyfin-web image on :80).
+// Web serving modes.
+const (
+	// WebModeDeployment runs a separate nginx web-tier Deployment + Service (default).
+	WebModeDeployment = "deployment"
+	// WebModeVolume mounts the web Image as a read-only image volume into the
+	// Jellyfin server pod and has the server host /web from it (so server-side
+	// static-file plugins like File Transformation can rewrite the web client).
+	WebModeVolume = "volume"
+)
+
+// WebSpec configures how the Jellyfin web client is served — either as a separate
+// web-tier Deployment (nginx jellyfin-web image), or mounted into the server pod as
+// an image volume the server serves itself.
 type WebSpec struct {
-	// Image is the web-tier container image. When empty the operator does not
-	// default; the CR author is expected to set this to the distro web image.
+	// Image is the web container image. When empty the operator does not default;
+	// the CR author is expected to set this to the distro web image.
 	// +optional
 	Image string `json:"image,omitempty"`
 
-	// Replicas is the desired number of web-tier pods. Defaults to 1.
+	// Mode selects how the web client is served. "deployment" (default) runs a
+	// separate nginx web-tier Deployment. "volume" mounts Image as a read-only
+	// image volume into the Jellyfin server pod and has the server host /web from
+	// it (drops --nowebclient, points --webdir at the mount), so server-side
+	// static-file plugins like File Transformation can transform the web client.
+	// +kubebuilder:validation:Enum=deployment;volume
+	// +kubebuilder:default=deployment
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
+	// SubPath is the directory within the web Image holding the built assets
+	// (index.html, chunks). Used only in "volume" mode. For the nginx jellyfin-web
+	// image this is "usr/share/nginx/html/web"; empty means the image root is the
+	// web dir.
+	// +optional
+	SubPath string `json:"subPath,omitempty"`
+
+	// PullPolicy for the web image volume in "volume" mode. Defaults to IfNotPresent.
+	// +optional
+	PullPolicy corev1.PullPolicy `json:"pullPolicy,omitempty"`
+
+	// Replicas is the desired number of web-tier pods (deployment mode). Defaults to 1.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
@@ -42,6 +74,14 @@ type WebSpec struct {
 	// PodAnnotations are merged onto the web pod template metadata.
 	// +optional
 	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+}
+
+// EffectiveMode returns the web serving mode, defaulting to WebModeDeployment when unset.
+func (w *WebSpec) EffectiveMode() string {
+	if w == nil || w.Mode == "" {
+		return WebModeDeployment
+	}
+	return w.Mode
 }
 
 // GatewaySpec configures a Gateway API HTTPRoute for the Jellyfin instance,

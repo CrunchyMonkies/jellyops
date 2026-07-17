@@ -113,7 +113,7 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 	}
 
 	var rules []gatewayv1.HTTPRouteRule
-	if jf.Spec.Web != nil {
+	if jf.Spec.Web != nil && jf.Spec.Web.EffectiveMode() == jellyfinv1alpha1.WebModeDeployment {
 		// Split mode: a separate web-tier Service hosts the Jellyfin web client.
 		// Route /web to it, with carve-outs so the plugin-configuration API
 		// endpoints that happen to live under /web still reach the server.

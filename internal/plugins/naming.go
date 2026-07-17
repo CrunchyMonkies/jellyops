@@ -79,6 +79,19 @@ const (
 	// does not override spec.image.
 	DefaultJellyfinImage = "jellyfin/jellyfin:latest"
 
+	// Web-as-volume mode (spec.web.mode: volume): the web image is mounted into
+	// the server pod and the server hosts /web from it.
+	//
+	// WebContentVolumeName is the volume holding the mounted web image.
+	WebContentVolumeName = "jellyfin-web-content"
+	// WebContentMountPath is where the web assets are mounted in the server
+	// container and where the server is pointed via JELLYFIN_WEB_DIR.
+	WebContentMountPath = "/jellyfin-web"
+	// DefaultJellyfinCommand overrides the fork image ENTRYPOINT to drop the
+	// baked "--nowebclient" flag so the server hosts the web client itself. This
+	// is the CrunchyMonkies fork's launcher path.
+	DefaultJellyfinCommand = "/jellyfin/jellyfin"
+
 	maxNameLen = 63
 )
 
