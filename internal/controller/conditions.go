@@ -18,10 +18,11 @@ package controller
 
 // Jellyfin condition types.
 const (
-	conditionReady          = "Ready"
-	conditionPluginsLoaded  = "PluginsLoaded"
-	conditionAPIReady       = "APIReady"
-	conditionLibrariesReady = "LibrariesReady"
+	conditionReady            = "Ready"
+	conditionPluginsLoaded    = "PluginsLoaded"
+	conditionAPIReady         = "APIReady"
+	conditionLibrariesReady   = "LibrariesReady"
+	conditionTranscodingReady = "TranscodingReady"
 )
 
 // JellyfinPlugin condition types.

@@ -604,6 +604,49 @@ spec:
                     - name
                     x-kubernetes-list-type: map
                 type: object
+              transcoding:
+                description: |-
+                  Transcoding bounds transcode cache growth (throttling + segment deletion) by
+                  reconciling Jellyfin's encoding configuration over the HTTP API. Requires the
+                  api block (see spec §7.6); an XValidation rule enforces this.
+                properties:
+                  segmentDeletion:
+                    description: |-
+                      SegmentDeletion removes already-played transcode segments during playback so
+                      a single long stream cannot exhaust the cache PVC.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled toggles Jellyfin's EnableSegmentDeletion. Leave unset to let
+                          Jellyfin's current value stand.
+                        type: boolean
+                      keepSeconds:
+                        description: |-
+                          KeepSeconds sets SegmentKeepSeconds — how many seconds of already-played
+                          segments to retain before deletion. Optional; Jellyfin defaults to 720.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    type: object
+                  throttle:
+                    description: |-
+                      Throttle pauses a transcode once it is far enough ahead of the player,
+                      bounding per-stream scratch to a rolling window instead of the whole file.
+                    properties:
+                      delaySeconds:
+                        description: |-
+                          DelaySeconds sets ThrottleDelaySeconds — how far ahead of the player a
+                          transcode may run before it is throttled. Optional; Jellyfin defaults to 180.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: |-
+                          Enabled toggles Jellyfin's EnableThrottling. Leave unset to let Jellyfin's
+                          current value stand (the operator only writes fields you explicitly set).
+                        type: boolean
+                    type: object
+                type: object
               web:
                 description: Web deploys a separate web-tier (jellyfin-web/nginx)
                   Deployment and Service.
@@ -714,6 +757,9 @@ spec:
             x-kubernetes-validations:
             - message: ingress and gateway are mutually exclusive
               rule: '!(has(self.ingress) && has(self.gateway))'
+            - message: transcoding requires api to be configured (encoding settings
+                are applied over the HTTP API)
+              rule: '!has(self.transcoding) || has(self.api)'
           status:
             description: status defines the observed state of Jellyfin
             properties:

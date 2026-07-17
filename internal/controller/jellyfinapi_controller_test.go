@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
@@ -43,6 +44,9 @@ type fakeAPI struct {
 	removed         []string
 	optionUpdates   map[string]json.RawMessage
 	bootstrapCalled bool
+
+	encoding        json.RawMessage
+	encodingUpdated json.RawMessage
 }
 
 func (f *fakeAPI) SetToken(string) {}
@@ -72,6 +76,13 @@ func (f *fakeAPI) UpdateLibraryOptions(_ context.Context, id string, options jso
 		f.optionUpdates = map[string]json.RawMessage{}
 	}
 	f.optionUpdates[id] = options
+	return nil
+}
+func (f *fakeAPI) GetEncodingConfig(context.Context) (json.RawMessage, error) {
+	return f.encoding, nil
+}
+func (f *fakeAPI) UpdateEncodingConfig(_ context.Context, cfg json.RawMessage) error {
+	f.encodingUpdated = cfg
 	return nil
 }
 
@@ -185,5 +196,41 @@ var _ = Describe("JellyfinAPIReconciler", func() {
 		// Unrelated fields are preserved.
 		Expect(updated).To(ContainSubstring(`"PreferredMetadataLanguage":"en"`))
 		Expect(strings.Count(updated, "MetadataSavers")).To(Equal(1))
+	})
+
+	It("reconciles transcode throttling/segment deletion without clobbering hwaccel", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "throttle", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{
+				API: &jellyfinv1alpha1.JellyfinAPISpec{Mode: "bootstrap", GeneratedSecretName: "throttle-api"},
+				Transcoding: &jellyfinv1alpha1.TranscodingSpec{
+					Throttle:        &jellyfinv1alpha1.ThrottleSpec{Enabled: ptr.To(true), DelaySeconds: ptr.To(int32(180))},
+					SegmentDeletion: &jellyfinv1alpha1.SegmentDeletionSpec{Enabled: ptr.To(true), KeepSeconds: ptr.To(int32(720))},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		apimeta.SetStatusCondition(&jf.Status.Conditions, metav1.Condition{Type: conditionReady, Status: metav1.ConditionTrue, Reason: "Test", Message: "ready"})
+		Expect(k8sClient.Status().Update(ctx, jf)).To(Succeed())
+
+		// Current encoding config has hwaccel set and both cache guards off.
+		fake := &fakeAPI{encoding: json.RawMessage(`{"HardwareAccelerationType":"qsv","EnableThrottling":false,"EnableSegmentDeletion":false}`)}
+		r := &JellyfinAPIReconciler{Client: k8sClient, Scheme: scheme.Scheme,
+			NewAPIClient: func(string, string) (APIClient, error) { return fake, nil }}
+		_, err := reconcileAPI(r, "throttle")
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(fake.encodingUpdated).NotTo(BeNil())
+		updated := string(fake.encodingUpdated)
+		Expect(updated).To(ContainSubstring(`"EnableThrottling":true`))
+		Expect(updated).To(ContainSubstring(`"EnableSegmentDeletion":true`))
+		Expect(updated).To(ContainSubstring(`"ThrottleDelaySeconds":180`))
+		Expect(updated).To(ContainSubstring(`"SegmentKeepSeconds":720`))
+		// hwaccel field survives the full-object replace.
+		Expect(updated).To(ContainSubstring(`"HardwareAccelerationType":"qsv"`))
+
+		var got jellyfinv1alpha1.Jellyfin
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "throttle", Namespace: ns}, &got)).To(Succeed())
+		Expect(apimeta.IsStatusConditionTrue(got.Status.Conditions, conditionTranscodingReady)).To(BeTrue())
 	})
 })

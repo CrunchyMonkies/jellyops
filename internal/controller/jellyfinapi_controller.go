@@ -58,6 +58,8 @@ type APIClient interface {
 	RemoveMediaPath(ctx context.Context, name, path string, refresh bool) error
 	UpdateLibraryOptions(ctx context.Context, id string, options json.RawMessage) error
 	RefreshLibraries(ctx context.Context) error
+	GetEncodingConfig(ctx context.Context) (json.RawMessage, error)
+	UpdateEncodingConfig(ctx context.Context, cfg json.RawMessage) error
 }
 
 // JellyfinAPIReconciler is a day-2 loop that authenticates to a Ready instance
@@ -125,6 +127,16 @@ func (r *JellyfinAPIReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{RequeueAfter: requeue}, writeJellyfinStatus(ctx, r.Client, &jf)
 		}
 		setCondition(&jf.Status.Conditions, conditionLibrariesReady, metav1.ConditionTrue, "Reconciled", "Libraries reconciled", jf.Generation)
+	}
+
+	if jf.Spec.Transcoding != nil {
+		if err := r.reconcileEncoding(ctx, &jf, cli); err != nil {
+			log.Error(err, "encoding reconciliation failed")
+			setCondition(&jf.Status.Conditions, conditionTranscodingReady, metav1.ConditionFalse, "EncodingError", err.Error(), jf.Generation)
+			setCondition(&jf.Status.Conditions, conditionAPIReady, metav1.ConditionTrue, "Authenticated", "Authenticated; encoding reconcile pending", jf.Generation)
+			return ctrl.Result{RequeueAfter: requeue}, writeJellyfinStatus(ctx, r.Client, &jf)
+		}
+		setCondition(&jf.Status.Conditions, conditionTranscodingReady, metav1.ConditionTrue, "Reconciled", "Transcode throttling/segment deletion reconciled", jf.Generation)
 	}
 
 	setCondition(&jf.Status.Conditions, conditionAPIReady, metav1.ConditionTrue, "Authenticated", "Authenticated to the Jellyfin API", jf.Generation)
@@ -311,6 +323,48 @@ func desiredLibraries(jf *jellyfinv1alpha1.Jellyfin) []jellyfinapi.DesiredLibrar
 		out = append(out, lib)
 	}
 	return out
+}
+
+// reconcileEncoding applies the managed transcode-cache fields onto the instance's
+// encoding config. It GETs the current config, overlays only the fields declared in
+// spec.transcoding (preserving QSV/VAAPI and any other settings), and POSTs back
+// only when something changed.
+func (r *JellyfinAPIReconciler) reconcileEncoding(ctx context.Context, jf *jellyfinv1alpha1.Jellyfin, cli APIClient) error {
+	desired := desiredEncoding(jf.Spec.Transcoding)
+	if desired.Empty() {
+		return nil
+	}
+	current, err := cli.GetEncodingConfig(ctx)
+	if err != nil {
+		return err
+	}
+	updated, changed, err := jellyfinapi.EnforceEncodingOptions(current, desired)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	return cli.UpdateEncodingConfig(ctx, updated)
+}
+
+// desiredEncoding maps the CR's transcoding block to the managed encoding fields.
+// Unset pointers stay nil so the operator never overwrites a field the user did not
+// declare.
+func desiredEncoding(t *jellyfinv1alpha1.TranscodingSpec) jellyfinapi.DesiredEncoding {
+	var d jellyfinapi.DesiredEncoding
+	if t == nil {
+		return d
+	}
+	if t.Throttle != nil {
+		d.EnableThrottling = t.Throttle.Enabled
+		d.ThrottleDelaySeconds = t.Throttle.DelaySeconds
+	}
+	if t.SegmentDeletion != nil {
+		d.EnableSegmentDeletion = t.SegmentDeletion.Enabled
+		d.SegmentKeepSeconds = t.SegmentDeletion.KeepSeconds
+	}
+	return d
 }
 
 func (r *JellyfinAPIReconciler) getSecret(ctx context.Context, ns, name string) (*corev1.Secret, error) {

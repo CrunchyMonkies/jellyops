@@ -24,6 +24,7 @@ import (
 
 // JellyfinSpec defines the desired state of a Jellyfin instance.
 // +kubebuilder:validation:XValidation:rule="!(has(self.ingress) && has(self.gateway))",message="ingress and gateway are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="!has(self.transcoding) || has(self.api)",message="transcoding requires api to be configured (encoding settings are applied over the HTTP API)"
 type JellyfinSpec struct {
 	// Image is the Jellyfin server container image. Defaults to a stock/official
 	// Jellyfin image when empty. Override only when a plugin requires an
@@ -70,6 +71,12 @@ type JellyfinSpec struct {
 	// HTTP API on :8096 (see spec §7.6).
 	// +optional
 	API *JellyfinAPISpec `json:"api,omitempty"`
+
+	// Transcoding bounds transcode cache growth (throttling + segment deletion) by
+	// reconciling Jellyfin's encoding configuration over the HTTP API. Requires the
+	// api block (see spec §7.6); an XValidation rule enforces this.
+	// +optional
+	Transcoding *TranscodingSpec `json:"transcoding,omitempty"`
 
 	// PluginSelector selects JellyfinPlugins bound to this instance by label, in
 	// addition to plugins that reference the instance directly via jellyfinRef.
