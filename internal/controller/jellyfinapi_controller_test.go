@@ -47,6 +47,11 @@ type fakeAPI struct {
 
 	encoding        json.RawMessage
 	encodingUpdated json.RawMessage
+
+	server          json.RawMessage
+	serverUpdated   json.RawMessage
+	branding        json.RawMessage
+	brandingUpdated json.RawMessage
 }
 
 func (f *fakeAPI) SetToken(string) {}
@@ -83,6 +88,20 @@ func (f *fakeAPI) GetEncodingConfig(context.Context) (json.RawMessage, error) {
 }
 func (f *fakeAPI) UpdateEncodingConfig(_ context.Context, cfg json.RawMessage) error {
 	f.encodingUpdated = cfg
+	return nil
+}
+func (f *fakeAPI) GetServerConfig(context.Context) (json.RawMessage, error) {
+	return f.server, nil
+}
+func (f *fakeAPI) UpdateServerConfig(_ context.Context, cfg json.RawMessage) error {
+	f.serverUpdated = cfg
+	return nil
+}
+func (f *fakeAPI) GetBrandingConfig(context.Context) (json.RawMessage, error) {
+	return f.branding, nil
+}
+func (f *fakeAPI) UpdateBrandingConfig(_ context.Context, cfg json.RawMessage) error {
+	f.brandingUpdated = cfg
 	return nil
 }
 

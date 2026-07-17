@@ -25,6 +25,9 @@ import (
 // JellyfinSpec defines the desired state of a Jellyfin instance.
 // +kubebuilder:validation:XValidation:rule="!(has(self.ingress) && has(self.gateway))",message="ingress and gateway are mutually exclusive"
 // +kubebuilder:validation:XValidation:rule="!has(self.transcoding) || has(self.api)",message="transcoding requires api to be configured (encoding settings are applied over the HTTP API)"
+// +kubebuilder:validation:XValidation:rule="!has(self.general) || has(self.api)",message="general requires api to be configured (settings are applied over the HTTP API)"
+// +kubebuilder:validation:XValidation:rule="!has(self.branding) || has(self.api)",message="branding requires api to be configured (settings are applied over the HTTP API)"
+// +kubebuilder:validation:XValidation:rule="!has(self.playback) || has(self.api)",message="playback requires api to be configured (settings are applied over the HTTP API)"
 type JellyfinSpec struct {
 	// Image is the Jellyfin server container image. Defaults to a stock/official
 	// Jellyfin image when empty. Override only when a plugin requires an
@@ -77,6 +80,21 @@ type JellyfinSpec struct {
 	// api block (see spec §7.6); an XValidation rule enforces this.
 	// +optional
 	Transcoding *TranscodingSpec `json:"transcoding,omitempty"`
+
+	// General reconciles Dashboard → General settings (ServerConfiguration) over the
+	// HTTP API. Requires the api block.
+	// +optional
+	General *GeneralSpec `json:"general,omitempty"`
+
+	// Branding reconciles Dashboard → Branding settings (login disclaimer, custom CSS,
+	// splash screen) over the HTTP API. Requires the api block.
+	// +optional
+	Branding *BrandingSpec `json:"branding,omitempty"`
+
+	// Playback reconciles Dashboard → Playback settings (resume behaviour + remote
+	// bitrate cap) over the HTTP API. Requires the api block.
+	// +optional
+	Playback *PlaybackSpec `json:"playback,omitempty"`
 
 	// PluginSelector selects JellyfinPlugins bound to this instance by label, in
 	// addition to plugins that reference the instance directly via jellyfinRef.

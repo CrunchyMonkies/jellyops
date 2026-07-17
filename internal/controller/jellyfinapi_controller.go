@@ -60,6 +60,10 @@ type APIClient interface {
 	RefreshLibraries(ctx context.Context) error
 	GetEncodingConfig(ctx context.Context) (json.RawMessage, error)
 	UpdateEncodingConfig(ctx context.Context, cfg json.RawMessage) error
+	GetServerConfig(ctx context.Context) (json.RawMessage, error)
+	UpdateServerConfig(ctx context.Context, cfg json.RawMessage) error
+	GetBrandingConfig(ctx context.Context) (json.RawMessage, error)
+	UpdateBrandingConfig(ctx context.Context, cfg json.RawMessage) error
 }
 
 // JellyfinAPIReconciler is a day-2 loop that authenticates to a Ready instance
@@ -137,6 +141,26 @@ func (r *JellyfinAPIReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{RequeueAfter: requeue}, writeJellyfinStatus(ctx, r.Client, &jf)
 		}
 		setCondition(&jf.Status.Conditions, conditionTranscodingReady, metav1.ConditionTrue, "Reconciled", "Transcode throttling/segment deletion reconciled", jf.Generation)
+	}
+
+	if jf.Spec.General != nil || jf.Spec.Playback != nil {
+		if err := r.reconcileServerConfig(ctx, &jf, cli); err != nil {
+			log.Error(err, "server configuration reconciliation failed")
+			setCondition(&jf.Status.Conditions, conditionServerConfigReady, metav1.ConditionFalse, "ServerConfigError", err.Error(), jf.Generation)
+			setCondition(&jf.Status.Conditions, conditionAPIReady, metav1.ConditionTrue, "Authenticated", "Authenticated; server config reconcile pending", jf.Generation)
+			return ctrl.Result{RequeueAfter: requeue}, writeJellyfinStatus(ctx, r.Client, &jf)
+		}
+		setCondition(&jf.Status.Conditions, conditionServerConfigReady, metav1.ConditionTrue, "Reconciled", "General/Playback settings reconciled", jf.Generation)
+	}
+
+	if jf.Spec.Branding != nil {
+		if err := r.reconcileBranding(ctx, &jf, cli); err != nil {
+			log.Error(err, "branding reconciliation failed")
+			setCondition(&jf.Status.Conditions, conditionBrandingReady, metav1.ConditionFalse, "BrandingError", err.Error(), jf.Generation)
+			setCondition(&jf.Status.Conditions, conditionAPIReady, metav1.ConditionTrue, "Authenticated", "Authenticated; branding reconcile pending", jf.Generation)
+			return ctrl.Result{RequeueAfter: requeue}, writeJellyfinStatus(ctx, r.Client, &jf)
+		}
+		setCondition(&jf.Status.Conditions, conditionBrandingReady, metav1.ConditionTrue, "Reconciled", "Branding settings reconciled", jf.Generation)
 	}
 
 	setCondition(&jf.Status.Conditions, conditionAPIReady, metav1.ConditionTrue, "Authenticated", "Authenticated to the Jellyfin API", jf.Generation)
@@ -364,6 +388,100 @@ func desiredEncoding(t *jellyfinv1alpha1.TranscodingSpec) jellyfinapi.DesiredEnc
 		d.EnableSegmentDeletion = t.SegmentDeletion.Enabled
 		d.SegmentKeepSeconds = t.SegmentDeletion.KeepSeconds
 	}
+	return d
+}
+
+// reconcileServerConfig applies the managed General + Playback fields onto the
+// instance's root ServerConfiguration. It GETs the current config, overlays only the
+// fields declared in spec.general / spec.playback (preserving everything else), and
+// POSTs the full object back only when something changed.
+func (r *JellyfinAPIReconciler) reconcileServerConfig(ctx context.Context, jf *jellyfinv1alpha1.Jellyfin, cli APIClient) error {
+	desired := desiredServerConfig(jf.Spec.General, jf.Spec.Playback)
+	if desired.Empty() {
+		return nil
+	}
+	current, err := cli.GetServerConfig(ctx)
+	if err != nil {
+		return err
+	}
+	updated, changed, err := jellyfinapi.EnforceServerConfig(current, desired)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	return cli.UpdateServerConfig(ctx, updated)
+}
+
+// desiredServerConfig maps the CR's general + playback blocks to the managed
+// ServerConfiguration fields. Unset pointers stay nil so the operator never overwrites
+// a field the user did not declare.
+func desiredServerConfig(g *jellyfinv1alpha1.GeneralSpec, p *jellyfinv1alpha1.PlaybackSpec) jellyfinapi.DesiredServerConfig {
+	var d jellyfinapi.DesiredServerConfig
+	if g != nil {
+		d.ServerName = g.ServerName
+		d.UICulture = g.UICulture
+		d.QuickConnectAvailable = g.QuickConnectAvailable
+		d.EnableMetrics = g.EnableMetrics
+		d.EnableNormalizedItemByNameIds = g.EnableNormalizedItemByNameIds
+		d.AllowClientLogUpload = g.AllowClientLogUpload
+		d.EnableSlowResponseWarning = g.EnableSlowResponseWarning
+		d.SlowResponseThresholdMs = g.SlowResponseThresholdMs
+		d.LibraryScanFanoutConcurrency = g.LibraryScanFanoutConcurrency
+		d.LibraryMetadataRefreshConcurrency = g.LibraryMetadataRefreshConcurrency
+		d.ParallelImageEncodingLimit = g.ParallelImageEncodingLimit
+		d.ActivityLogRetentionDays = g.ActivityLogRetentionDays
+		d.LibraryMonitorDelay = g.LibraryMonitorDelay
+		d.LibraryUpdateDuration = g.LibraryUpdateDuration
+		d.InactiveSessionThreshold = g.InactiveSessionThreshold
+		d.LogFileRetentionDays = g.LogFileRetentionDays
+		d.CachePath = g.CachePath
+		d.MetadataPath = g.MetadataPath
+		d.CorsHosts = g.CorsHosts
+	}
+	if p != nil {
+		d.MinResumePct = p.MinResumePct
+		d.MaxResumePct = p.MaxResumePct
+		d.MinResumeDurationSeconds = p.MinResumeDurationSeconds
+		d.MinAudiobookResume = p.MinAudiobookResumeMinutes
+		d.MaxAudiobookResume = p.MaxAudiobookResumeMinutes
+		d.RemoteClientBitrateLimit = p.RemoteClientBitrateLimit
+	}
+	return d
+}
+
+// reconcileBranding applies the managed branding fields onto the instance's branding
+// config. GET, overlay declared fields (preserving SplashscreenLocation), POST back
+// only when something changed.
+func (r *JellyfinAPIReconciler) reconcileBranding(ctx context.Context, jf *jellyfinv1alpha1.Jellyfin, cli APIClient) error {
+	desired := desiredBranding(jf.Spec.Branding)
+	if desired.Empty() {
+		return nil
+	}
+	current, err := cli.GetBrandingConfig(ctx)
+	if err != nil {
+		return err
+	}
+	updated, changed, err := jellyfinapi.EnforceBranding(current, desired)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	return cli.UpdateBrandingConfig(ctx, updated)
+}
+
+// desiredBranding maps the CR's branding block to the managed branding fields.
+func desiredBranding(b *jellyfinv1alpha1.BrandingSpec) jellyfinapi.DesiredBranding {
+	var d jellyfinapi.DesiredBranding
+	if b == nil {
+		return d
+	}
+	d.LoginDisclaimer = b.LoginDisclaimer
+	d.CustomCss = b.CustomCss
+	d.SplashscreenEnabled = b.SplashscreenEnabled
 	return d
 }
 
