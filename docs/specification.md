@@ -149,6 +149,10 @@ type JellyfinSpec struct {
 
     // API enables day-2 reconciliation of in-app state (libraries) via Jellyfin's HTTP API (§7.6).
     API *JellyfinAPISpec `json:"api,omitempty"`
+
+    // Transcoding bounds transcode-cache growth (throttling + segment deletion).
+    // Applied over the HTTP API, so it requires api to be set (§7.6.3).
+    Transcoding *TranscodingSpec `json:"transcoding,omitempty"`
 }
 
 // JellyfinAPISpec configures how the operator authenticates to, and reconciles state inside,
@@ -232,6 +236,22 @@ type HardwareAccel struct {
     // For NVIDIA: requests nvidia.com/gpu via Resources + runtimeClassName.
 }
 
+// TranscodingSpec bounds transcode-cache growth; applied over the API (§7.6.4), requires spec.api.
+type TranscodingSpec struct {
+    Throttle        *ThrottleSpec        `json:"throttle,omitempty"`        // -> EnableThrottling / ThrottleDelaySeconds
+    SegmentDeletion *SegmentDeletionSpec `json:"segmentDeletion,omitempty"` // -> EnableSegmentDeletion / SegmentKeepSeconds
+}
+
+type ThrottleSpec struct {
+    Enabled      *bool  `json:"enabled,omitempty"`      // -> EnableThrottling (nil = leave as-is)
+    DelaySeconds *int32 `json:"delaySeconds,omitempty"` // -> ThrottleDelaySeconds (optional; JF default 180)
+}
+
+type SegmentDeletionSpec struct {
+    Enabled     *bool  `json:"enabled,omitempty"`     // -> EnableSegmentDeletion (nil = leave as-is)
+    KeepSeconds *int32 `json:"keepSeconds,omitempty"` // -> SegmentKeepSeconds (optional; JF default 720)
+}
+
 type JellyfinStatus struct {
     ObservedGeneration int64              `json:"observedGeneration,omitempty"`
     Phase              string             `json:"phase,omitempty"` // Pending|Ready|Degraded
@@ -284,6 +304,13 @@ spec:
     manageLibraries: true
     prune: true                     # operator-managed libraries removed from spec are deleted
     refreshLibraryOnChange: true
+  transcoding:                      # bounds transcode-cache growth (requires api, above)
+    throttle:
+      enabled: true                 # -> EnableThrottling
+      delaySeconds: 180             # -> ThrottleDelaySeconds (optional)
+    segmentDeletion:
+      enabled: true                 # -> EnableSegmentDeletion
+      keepSeconds: 720              # -> SegmentKeepSeconds (optional)
   service:
     type: ClusterIP
   ingress:
@@ -706,12 +733,28 @@ The loop is **level-triggered and idempotent**: it re-lists and re-diffs every r
 - **Mount/library ordering** — a library is only registered after its `mountPath` exists in the running pod, so Jellyfin never points at a missing path. Changing a folder's storage source triggers a pod rollout (Kubernetes reconcile) first; the API reconcile runs once the new pod is `Ready`.
 - **Failure isolation** — API failures (auth, transient 5xx) set an `APIReady=false` condition and requeue with backoff; they do **not** affect the instance's serving state or the plugin reconcilers.
 
-#### 7.6.4 Status & conditions
+#### 7.6.4 Transcode-cache reconciliation
+
+Jellyfin ships with transcode **throttling** and **segment deletion** disabled, so a single stream can transcode the whole file ahead of playback and fill the cache PVC, leaving orphaned scratch behind. `spec.transcoding` bounds this declaratively — the settings live in Jellyfin's encoding configuration (`encoding.xml`), which the operator reconciles over the same HTTP API as libraries. Because it needs the authenticated API loop, `spec.transcoding` **requires `spec.api`** (enforced by a CRD `XValidation` rule).
+
+When `spec.transcoding` is set, the reconcile:
+
+1. **GET** the current encoding config: `GET /System/Configuration/encoding`.
+2. **Overlay** only the managed fields onto the current object, mirroring the read-only-options merge for libraries so QSV/VAAPI and any other encoding settings are preserved (the config `POST` is a full-object replace). Field mapping:
+   - `throttle.enabled` → `EnableThrottling`, `throttle.delaySeconds` → `ThrottleDelaySeconds`.
+   - `segmentDeletion.enabled` → `EnableSegmentDeletion`, `segmentDeletion.keepSeconds` → `SegmentKeepSeconds`.
+   - Unset (`nil`) fields are never written, so a value set in the Jellyfin UI stands until you declare intent in the CR.
+3. **POST** the merged object back only when something changed: `POST /System/Configuration/encoding`.
+
+Like the library loop it is level-triggered and idempotent — out-of-band edits are corrected on the next pass.
+
+#### 7.6.5 Status & conditions
 
 | Resource | Condition | Meaning |
 |----------|-----------|---------|
 | `Jellyfin` | `APIReady` | Operator is authenticated to the instance API. |
 | `Jellyfin` | `LibrariesReady` | All desired libraries exist with the correct paths/options. |
+| `Jellyfin` | `TranscodingReady` | `spec.transcoding` encoding settings are applied on the instance. |
 
 `Jellyfin.status` also gains `managedLibraries []string` (the owned set) and `apiCredentialsSecret` (the resolved/generated Secret name).
 

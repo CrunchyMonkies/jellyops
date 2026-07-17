@@ -104,6 +104,21 @@ spec:
                       scan after any change.
                     type: boolean
                 type: object
+              branding:
+                description: |-
+                  Branding reconciles Dashboard → Branding settings (login disclaimer, custom CSS,
+                  splash screen) over the HTTP API. Requires the api block.
+                properties:
+                  customCss:
+                    description: CustomCss is injected into the web client.
+                    type: string
+                  loginDisclaimer:
+                    description: LoginDisclaimer is markdown shown on the login screen.
+                    type: string
+                  splashscreenEnabled:
+                    description: SplashscreenEnabled toggles the login splash screen.
+                    type: boolean
+                type: object
               gateway:
                 description: Gateway configures a Gateway API HTTPRoute. Mutually
                   exclusive with Ingress.
@@ -155,6 +170,102 @@ spec:
                 required:
                 - gatewayRef
                 - hostname
+                type: object
+              general:
+                description: |-
+                  General reconciles Dashboard → General settings (ServerConfiguration) over the
+                  HTTP API. Requires the api block.
+                properties:
+                  activityLogRetentionDays:
+                    description: ActivityLogRetentionDays is how long to keep the
+                      activity log.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  allowClientLogUpload:
+                    description: AllowClientLogUpload lets clients upload logs to
+                      the server.
+                    type: boolean
+                  cachePath:
+                    description: CachePath overrides the server cache directory.
+                    type: string
+                  corsHosts:
+                    description: |-
+                      CorsHosts is the allowed CORS origins list. Setting this (including an empty
+                      list) replaces Jellyfin's list; omit the field to leave it untouched.
+                    items:
+                      type: string
+                    type: array
+                  enableMetrics:
+                    description: EnableMetrics exposes the Prometheus metrics endpoint.
+                    type: boolean
+                  enableNormalizedItemByNameIds:
+                    description: EnableNormalizedItemByNameIds normalizes ItemByName
+                      ids.
+                    type: boolean
+                  enableSlowResponseWarning:
+                    description: EnableSlowResponseWarning logs a warning for slow
+                      API responses.
+                    type: boolean
+                  inactiveSessionThreshold:
+                    description: InactiveSessionThreshold auto-closes idle sessions
+                      after N minutes (0 = disabled).
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  libraryMetadataRefreshConcurrency:
+                    description: LibraryMetadataRefreshConcurrency bounds parallel
+                      metadata refresh (0 = auto).
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  libraryMonitorDelay:
+                    description: LibraryMonitorDelay is the real-time monitor debounce
+                      in seconds.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  libraryScanFanoutConcurrency:
+                    description: LibraryScanFanoutConcurrency bounds parallel library
+                      scan fanout (0 = auto).
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  libraryUpdateDuration:
+                    description: LibraryUpdateDuration is the library update debounce
+                      in seconds.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  logFileRetentionDays:
+                    description: LogFileRetentionDays is how long to keep log files.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  metadataPath:
+                    description: MetadataPath overrides the server metadata directory.
+                    type: string
+                  parallelImageEncodingLimit:
+                    description: ParallelImageEncodingLimit bounds concurrent image
+                      encodes (0 = auto).
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  quickConnectAvailable:
+                    description: QuickConnectAvailable toggles Quick Connect.
+                    type: boolean
+                  serverName:
+                    description: ServerName is the friendly server name shown to clients.
+                    type: string
+                  slowResponseThresholdMs:
+                    description: SlowResponseThresholdMs is the slow-response warning
+                      threshold in ms.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  uiCulture:
+                    description: UICulture is the display language, e.g. "en-US".
+                    type: string
                 type: object
               hardwareAcceleration:
                 description: HardwareAcceleration optionally attaches a GPU/VAAPI
@@ -244,6 +355,49 @@ spec:
                     type: object
                 required:
                 - host
+                type: object
+              playback:
+                description: |-
+                  Playback reconciles Dashboard → Playback settings (resume behaviour + remote
+                  bitrate cap) over the HTTP API. Requires the api block.
+                properties:
+                  maxAudiobookResumeMinutes:
+                    description: MaxAudiobookResumeMinutes maps ServerConfiguration.MaxAudiobookResume.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  maxResumePct:
+                    description: |-
+                      MaxResumePct is the maximum played percentage still treated as resumable
+                      (beyond it the item is considered watched).
+                    format: int32
+                    maximum: 100
+                    minimum: 0
+                    type: integer
+                  minAudiobookResumeMinutes:
+                    description: MinAudiobookResumeMinutes maps ServerConfiguration.MinAudiobookResume.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  minResumeDurationSeconds:
+                    description: MinResumeDurationSeconds is the minimum item length
+                      (seconds) to store a resume point.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  minResumePct:
+                    description: MinResumePct is the minimum played percentage before
+                      a resume point is stored.
+                    format: int32
+                    maximum: 100
+                    minimum: 0
+                    type: integer
+                  remoteClientBitrateLimit:
+                    description: RemoteClientBitrateLimit caps remote (internet) client
+                      bitrate in bps (0 = unlimited).
+                    format: int32
+                    minimum: 0
+                    type: integer
                 type: object
               pluginSelector:
                 description: |-
@@ -604,14 +758,69 @@ spec:
                     - name
                     x-kubernetes-list-type: map
                 type: object
+              transcoding:
+                description: |-
+                  Transcoding bounds transcode cache growth (throttling + segment deletion) by
+                  reconciling Jellyfin's encoding configuration over the HTTP API. Requires the
+                  api block (see spec §7.6); an XValidation rule enforces this.
+                properties:
+                  segmentDeletion:
+                    description: |-
+                      SegmentDeletion removes already-played transcode segments during playback so
+                      a single long stream cannot exhaust the cache PVC.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled toggles Jellyfin's EnableSegmentDeletion. Leave unset to let
+                          Jellyfin's current value stand.
+                        type: boolean
+                      keepSeconds:
+                        description: |-
+                          KeepSeconds sets SegmentKeepSeconds — how many seconds of already-played
+                          segments to retain before deletion. Optional; Jellyfin defaults to 720.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    type: object
+                  throttle:
+                    description: |-
+                      Throttle pauses a transcode once it is far enough ahead of the player,
+                      bounding per-stream scratch to a rolling window instead of the whole file.
+                    properties:
+                      delaySeconds:
+                        description: |-
+                          DelaySeconds sets ThrottleDelaySeconds — how far ahead of the player a
+                          transcode may run before it is throttled. Optional; Jellyfin defaults to 180.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      enabled:
+                        description: |-
+                          Enabled toggles Jellyfin's EnableThrottling. Leave unset to let Jellyfin's
+                          current value stand (the operator only writes fields you explicitly set).
+                        type: boolean
+                    type: object
+                type: object
               web:
                 description: Web deploys a separate web-tier (jellyfin-web/nginx)
                   Deployment and Service.
                 properties:
                   image:
                     description: |-
-                      Image is the web-tier container image. When empty the operator does not
-                      default; the CR author is expected to set this to the distro web image.
+                      Image is the web container image. When empty the operator does not default;
+                      the CR author is expected to set this to the distro web image.
+                    type: string
+                  mode:
+                    default: deployment
+                    description: |-
+                      Mode selects how the web client is served. "deployment" (default) runs a
+                      separate nginx web-tier Deployment. "volume" mounts Image as a read-only
+                      image volume into the Jellyfin server pod and has the server host /web from
+                      it (drops --nowebclient, points --webdir at the mount), so server-side
+                      static-file plugins like File Transformation can transform the web client.
+                    enum:
+                    - deployment
+                    - volume
                     type: string
                   podAnnotations:
                     additionalProperties:
@@ -619,9 +828,13 @@ spec:
                     description: PodAnnotations are merged onto the web pod template
                       metadata.
                     type: object
+                  pullPolicy:
+                    description: PullPolicy for the web image volume in "volume" mode.
+                      Defaults to IfNotPresent.
+                    type: string
                   replicas:
-                    description: Replicas is the desired number of web-tier pods.
-                      Defaults to 1.
+                    description: Replicas is the desired number of web-tier pods (deployment
+                      mode). Defaults to 1.
                     format: int32
                     minimum: 0
                     type: integer
@@ -709,11 +922,30 @@ spec:
                         - LoadBalancer
                         type: string
                     type: object
+                  subPath:
+                    description: |-
+                      SubPath is the directory within the web Image holding the built assets
+                      (index.html, chunks). Used only in "volume" mode. For the nginx jellyfin-web
+                      image this is "usr/share/nginx/html/web"; empty means the image root is the
+                      web dir.
+                    type: string
                 type: object
             type: object
             x-kubernetes-validations:
             - message: ingress and gateway are mutually exclusive
               rule: '!(has(self.ingress) && has(self.gateway))'
+            - message: transcoding requires api to be configured (encoding settings
+                are applied over the HTTP API)
+              rule: '!has(self.transcoding) || has(self.api)'
+            - message: general requires api to be configured (settings are applied
+                over the HTTP API)
+              rule: '!has(self.general) || has(self.api)'
+            - message: branding requires api to be configured (settings are applied
+                over the HTTP API)
+              rule: '!has(self.branding) || has(self.api)'
+            - message: playback requires api to be configured (settings are applied
+                over the HTTP API)
+              rule: '!has(self.playback) || has(self.api)'
           status:
             description: status defines the observed state of Jellyfin
             properties:

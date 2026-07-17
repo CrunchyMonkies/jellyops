@@ -45,6 +45,13 @@ spec:
     manageLibraries: true
     prune: true
     refreshLibraryOnChange: true
+  transcoding: # bounds transcode-cache growth; requires the api block above
+    throttle:
+      enabled: true # pause a transcode once it runs far enough ahead of the player
+      delaySeconds: 180 # optional; Jellyfin default
+    segmentDeletion:
+      enabled: true # delete already-played segments during playback
+      keepSeconds: 720 # optional; Jellyfin default
   service:
     type: ClusterIP
   ingress:

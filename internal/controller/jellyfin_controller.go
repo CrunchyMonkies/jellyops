@@ -294,8 +294,10 @@ func (r *JellyfinReconciler) reconcileWeb(ctx context.Context, jf *jellyfinv1alp
 	webDepName := plugins.WebDeploymentName(jf)
 	webSvcName := plugins.WebServiceName(jf)
 
-	if jf.Spec.Web == nil {
-		// Best-effort cleanup of previously-created web objects.
+	if jf.Spec.Web == nil || jf.Spec.Web.EffectiveMode() == jellyfinv1alpha1.WebModeVolume {
+		// No separate web tier: either web is unset, or web-as-volume mode mounts
+		// the web image into the server pod (handled in the pod builder). Clean up
+		// any previously-created web Deployment/Service.
 		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: webDepName, Namespace: jf.Namespace}}
 		if err := r.Delete(ctx, dep); err != nil && !apierrors.IsNotFound(err) {
 			return err
