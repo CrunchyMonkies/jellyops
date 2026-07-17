@@ -48,6 +48,18 @@ func effectiveInt64(override *int64, fallback int64) int64 {
 // (pure defaults apply). Existing fields on the pod SecurityContext (e.g.
 // SeccompProfile, SupplementalGroups from hw-accel) are preserved.
 func applyPodSecurity(container *corev1.Container, pod *corev1.PodSpec, ps *jellyfinv1alpha1.PodSecuritySpec) {
+	// Opt-out: an explicit runAsNonRoot=false disables the hardened profile for this
+	// workload, preserving legacy behavior (root allowed, capabilities intact) for
+	// third-party service workloads (e.g. Shoko) not yet ready for non-root. Keep only
+	// allowPrivilegeEscalation=false; the pod-level SeccompProfile set by the caller stays.
+	if ps != nil && ps.RunAsNonRoot != nil && !*ps.RunAsNonRoot {
+		if container.SecurityContext == nil {
+			container.SecurityContext = &corev1.SecurityContext{}
+		}
+		container.SecurityContext.AllowPrivilegeEscalation = ptr.To(false)
+		return
+	}
+
 	nonRoot := true
 	uid := DefaultRunAsUser
 	gid := DefaultRunAsGroup
@@ -90,6 +102,14 @@ func applyPodSecurity(container *corev1.Container, pod *corev1.PodSpec, ps *jell
 // init containers that don't need pod-spec-level changes (those are set once
 // by applyPodSecurity on the main container).
 func applyContainerSecurity(container *corev1.Container, ps *jellyfinv1alpha1.PodSecuritySpec) {
+	if ps != nil && ps.RunAsNonRoot != nil && !*ps.RunAsNonRoot {
+		if container.SecurityContext == nil {
+			container.SecurityContext = &corev1.SecurityContext{}
+		}
+		container.SecurityContext.AllowPrivilegeEscalation = ptr.To(false)
+		return
+	}
+
 	nonRoot := true
 	uid := DefaultRunAsUser
 	gid := DefaultRunAsGroup
