@@ -121,6 +121,73 @@ func EnforceReadOnlyOptions(current json.RawMessage) (json.RawMessage, bool, err
 	return out, true, nil
 }
 
+// MergeLibraryOptions deep-merges the desired options onto the current library
+// options. For nested JSON objects both sides share, it recurses so sub-keys
+// (e.g. TypeOptions) are merged rather than clobbered. Arrays and scalars in
+// desired overwrite current. Returns the merged JSON and whether anything
+// changed. An empty/nil desired returns current unchanged.
+func MergeLibraryOptions(current, desired json.RawMessage) (json.RawMessage, bool, error) {
+	if len(bytesTrim(desired)) == 0 {
+		return current, false, nil
+	}
+	var curMap map[string]any
+	if len(bytesTrim(current)) > 0 {
+		if err := json.Unmarshal(current, &curMap); err != nil {
+			return nil, false, err
+		}
+	}
+	if curMap == nil {
+		curMap = map[string]any{}
+	}
+	var desMap map[string]any
+	if err := json.Unmarshal(desired, &desMap); err != nil {
+		return nil, false, err
+	}
+
+	deepMerge(curMap, desMap)
+
+	merged, err := json.Marshal(curMap)
+	if err != nil {
+		return nil, false, err
+	}
+	// Compare by re-marshalling original current so whitespace differences
+	// don't trigger a spurious update.
+	origNorm, _ := json.Marshal(jsonToMap(current))
+	changed := string(merged) != string(origNorm)
+	if !changed {
+		return current, false, nil
+	}
+	return merged, true, nil
+}
+
+// deepMerge recursively sets every key from src onto dst. When both dst and src
+// hold a JSON object (map[string]any) for the same key, the function recurses;
+// otherwise the src value wins outright.
+func deepMerge(dst, src map[string]any) {
+	for k, sv := range src {
+		dv, exists := dst[k]
+		if exists {
+			if dm, dok := dv.(map[string]any); dok {
+				if sm, sok := sv.(map[string]any); sok {
+					deepMerge(dm, sm)
+					continue
+				}
+			}
+		}
+		dst[k] = sv
+	}
+}
+
+// jsonToMap unmarshals a JSON blob into a map for normalised comparison.
+// Returns an empty map on nil/empty/error.
+func jsonToMap(raw json.RawMessage) map[string]any {
+	m := map[string]any{}
+	if len(bytesTrim(raw)) > 0 {
+		_ = json.Unmarshal(raw, &m)
+	}
+	return m
+}
+
 func bytesTrim(b json.RawMessage) []byte {
 	s := strings.TrimSpace(string(b))
 	if s == "null" {

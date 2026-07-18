@@ -274,8 +274,8 @@ func (r *JellyfinAPIReconciler) reconcileLibraries(ctx context.Context, jf *jell
 		}
 	}
 
-	// Enforce write-disabling options for read-only media libraries so Jellyfin
-	// never writes .nfo/subtitles into a read-only mount. Re-list after creates so
+	// Enforce library options: read-only flags for PreventWrites libraries and
+	// user-declared Options for all libraries. Re-list after creates so
 	// newly-created libraries are included with their full (default) options.
 	folders := existing
 	if len(diff.ToCreate) > 0 {
@@ -289,19 +289,38 @@ func (r *JellyfinAPIReconciler) reconcileLibraries(ctx context.Context, jf *jell
 	}
 	optsChanged := false
 	for _, d := range desired {
-		if !d.PreventWrites {
-			continue
-		}
 		f, ok := byName[d.Name]
 		if !ok || f.ItemID == "" {
 			continue
 		}
-		updated, changed, err := jellyfinapi.EnforceReadOnlyOptions(f.LibraryOptions)
-		if err != nil {
-			return err
+		current := f.LibraryOptions
+		merged := current
+		libChanged := false
+
+		if d.PreventWrites {
+			updated, changed, err := jellyfinapi.EnforceReadOnlyOptions(current)
+			if err != nil {
+				return err
+			}
+			if changed {
+				merged = updated
+				libChanged = true
+			}
 		}
-		if changed {
-			if err := cli.UpdateLibraryOptions(ctx, f.ItemID, updated); err != nil {
+
+		if len(d.Options) > 0 {
+			updated, changed, err := jellyfinapi.MergeLibraryOptions(merged, d.Options)
+			if err != nil {
+				return err
+			}
+			if changed {
+				merged = updated
+				libChanged = true
+			}
+		}
+
+		if libChanged {
+			if err := cli.UpdateLibraryOptions(ctx, f.ItemID, merged); err != nil {
 				return err
 			}
 			optsChanged = true
