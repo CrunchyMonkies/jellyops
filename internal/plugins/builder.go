@@ -492,17 +492,33 @@ func applyHardwareAccel(pod *corev1.PodSpec, hw *jellyfinv1alpha1.HardwareAccel)
 	jellyfin := &pod.Containers[0]
 	switch hw.Type {
 	case "vaapi", "qsv":
-		dev := hw.DevicePath
-		if dev == "" {
-			dev = "/dev/dri/renderD128"
+		if hw.DeviceResource != "" {
+			// Device-plugin path (preferred): the plugin injects the render device
+			// and the request schedules the pod onto a GPU node. No hostPath, so the
+			// pod stays compatible with the "baseline"/"restricted" Pod Security
+			// Standards. DevicePath is advisory here — ffmpeg defaults to the
+			// renderD1xx node the plugin's allocation provides.
+			if jellyfin.Resources.Limits == nil {
+				jellyfin.Resources.Limits = corev1.ResourceList{}
+			}
+			jellyfin.Resources.Limits[corev1.ResourceName(hw.DeviceResource)] = resourceQuantityOne()
+		} else {
+			// Legacy hostPath path, kept for backwards compatibility. NOTE: a hostPath
+			// volume is disallowed under the "baseline" and "restricted" Pod Security
+			// Standards — set DeviceResource instead in an enforcing namespace.
+			dev := hw.DevicePath
+			if dev == "" {
+				dev = "/dev/dri/renderD128"
+			}
+			pod.Volumes = append(pod.Volumes, corev1.Volume{
+				Name: "dri-device",
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{Path: dev, Type: ptr.To(corev1.HostPathCharDev)},
+				},
+			})
+			jellyfin.VolumeMounts = append(jellyfin.VolumeMounts, corev1.VolumeMount{Name: "dri-device", MountPath: dev})
 		}
-		pod.Volumes = append(pod.Volumes, corev1.Volume{
-			Name: "dri-device",
-			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{Path: dev, Type: ptr.To(corev1.HostPathCharDev)},
-			},
-		})
-		jellyfin.VolumeMounts = append(jellyfin.VolumeMounts, corev1.VolumeMount{Name: "dri-device", MountPath: dev})
+		// The render group lets a non-root container open the device either way.
 		if hw.RenderGroupGID != nil {
 			if pod.SecurityContext == nil {
 				pod.SecurityContext = &corev1.PodSecurityContext{}

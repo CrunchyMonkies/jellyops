@@ -372,6 +372,30 @@ func TestHardwareAccelVAAPI(t *testing.T) {
 	}
 }
 
+func TestHardwareAccelDeviceResource(t *testing.T) {
+	// The device-plugin path requests a device resource (which both injects the
+	// render device and schedules onto a GPU node) instead of a hostPath volume,
+	// so the pod stays "restricted" Pod Security Standards compliant.
+	jf := baseInstance()
+	jf.Spec.HardwareAcceleration = &jellyfinv1alpha1.HardwareAccel{
+		Type:           "qsv",
+		DevicePath:     "/dev/dri/renderD128", // advisory only when DeviceResource is set
+		DeviceResource: "gpu.intel.com/xe",
+		RenderGroupGID: ptr.To(int64(44)),
+	}
+	pod, _ := BuildPodTemplateSpec(jf, nil)
+
+	if v := findVolume(pod.Spec.Volumes, "dri-device"); v != nil {
+		t.Error("dri-device hostPath volume must NOT be present on the device-plugin path")
+	}
+	if _, ok := pod.Spec.Containers[0].Resources.Limits["gpu.intel.com/xe"]; !ok {
+		t.Errorf("device-plugin resource limit missing: %+v", pod.Spec.Containers[0].Resources.Limits)
+	}
+	if len(pod.Spec.SecurityContext.SupplementalGroups) != 1 || pod.Spec.SecurityContext.SupplementalGroups[0] != 44 {
+		t.Errorf("render group must still be set on the device-plugin path: %+v", pod.Spec.SecurityContext.SupplementalGroups)
+	}
+}
+
 func TestHardwareAccelNvidia(t *testing.T) {
 	jf := baseInstance()
 	jf.Spec.HardwareAcceleration = &jellyfinv1alpha1.HardwareAccel{Type: "nvidia", RuntimeClassName: "nvidia"}

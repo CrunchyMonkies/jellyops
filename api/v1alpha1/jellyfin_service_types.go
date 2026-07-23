@@ -69,9 +69,22 @@ type HardwareAccel struct {
 	Type string `json:"type"`
 
 	// DevicePath is the render device to mount for vaapi/qsv, e.g.
-	// /dev/dri/renderD128. Ignored for nvidia (handled via device plugin).
+	// /dev/dri/renderD128. Ignored for nvidia (handled via device plugin), and
+	// ignored when DeviceResource is set (the device plugin injects the node).
 	// +optional
 	DevicePath string `json:"devicePath,omitempty"`
+
+	// DeviceResource requests a device-plugin resource for vaapi/qsv instead of
+	// mounting DevicePath as a hostPath volume, e.g. "gpu.intel.com/xe" (Arc/xe)
+	// or "gpu.intel.com/i915". The plugin injects the render device and the
+	// request also schedules the pod onto a GPU node.
+	//
+	// Prefer this over DevicePath: a hostPath volume is disallowed by the
+	// "baseline" and "restricted" Pod Security Standards, so DevicePath cannot be
+	// used in a namespace that enforces either. Defaults to the DevicePath
+	// hostPath behaviour when unset, for backwards compatibility.
+	// +optional
+	DeviceResource string `json:"deviceResource,omitempty"`
 
 	// RenderGroupGID is added as a supplemental group so the container can access
 	// the render device.
