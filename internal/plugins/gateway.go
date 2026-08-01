@@ -28,6 +28,16 @@ func HTTPRouteName(jf *jellyfinv1alpha1.Jellyfin) string {
 	return truncateName(jf.Name)
 }
 
+const (
+	// webBasePath is the web client's base path; the bare root redirects here.
+	webBasePath = "/web/"
+	// defaultAuthorizePath is the OAuth2 plugin's default authorize endpoint.
+	defaultAuthorizePath = "/sso/authorize"
+	headerSecFetchMode   = "Sec-Fetch-Mode"
+	// secFetchNavigate marks browser top-level navigations (vs XHR fetches).
+	secFetchNavigate = "navigate"
+)
+
 // BuildHTTPRoute builds the desired Gateway API HTTPRoute for an instance.
 //
 // Split mode (jf.Spec.Web != nil): routes /web to the separate web-tier
@@ -138,11 +148,11 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 				Matches: []gatewayv1.HTTPRouteMatch{
 					{
 						Path:    &gatewayv1.HTTPPathMatch{Type: &webPrefix, Value: ptrTo("/web/configurationpage")},
-						Headers: []gatewayv1.HTTPHeaderMatch{{Type: &headerExact, Name: "Sec-Fetch-Mode", Value: "navigate"}},
+						Headers: []gatewayv1.HTTPHeaderMatch{{Type: &headerExact, Name: headerSecFetchMode, Value: secFetchNavigate}},
 					},
 					{
 						Path:    &gatewayv1.HTTPPathMatch{Type: &webPrefix, Value: ptrTo("/web/ConfigurationPage")},
-						Headers: []gatewayv1.HTTPHeaderMatch{{Type: &headerExact, Name: "Sec-Fetch-Mode", Value: "navigate"}},
+						Headers: []gatewayv1.HTTPHeaderMatch{{Type: &headerExact, Name: headerSecFetchMode, Value: secFetchNavigate}},
 					},
 				},
 				BackendRefs: []gatewayv1.HTTPBackendRef{{
@@ -242,9 +252,9 @@ func rootRedirectTarget(gw *jellyfinv1alpha1.GatewaySpec) string {
 		if gw.SSO.AuthorizePath != "" {
 			return gw.SSO.AuthorizePath
 		}
-		return "/sso/authorize"
+		return defaultAuthorizePath
 	}
-	return "/web/"
+	return webBasePath
 }
 
 func ptrTo[T any](v T) *T {

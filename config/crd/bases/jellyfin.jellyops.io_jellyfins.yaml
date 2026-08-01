@@ -273,8 +273,18 @@ spec:
                 properties:
                   devicePath:
                     description: |-
-                      DevicePath is the render device to mount for vaapi/qsv, e.g.
-                      /dev/dri/renderD128. Ignored for nvidia (handled via device plugin).
+                      DevicePath pins the render device for vaapi/qsv, e.g. /dev/dri/renderD129.
+                      When unset, /dev/dri is mounted and the device is auto-detected at pod
+                      startup (the render node is not always renderD128). Ignored for nvidia and
+                      when DeviceResource is set.
+                    type: string
+                  deviceResource:
+                    description: |-
+                      DeviceResource requests a device-plugin resource for vaapi/qsv, e.g.
+                      "gpu.intel.com/xe" or "gpu.intel.com/i915", instead of a hostPath mount.
+                      The plugin injects the render device (auto-detected at startup) and the
+                      request schedules the pod onto a GPU node. Prefer this over the hostPath
+                      behaviour, which the "baseline"/"restricted" Pod Security Standards forbid.
                     type: string
                   renderGroupGID:
                     description: |-
@@ -288,7 +298,11 @@ spec:
                       "nvidia".
                     type: string
                   type:
-                    description: Type selects the acceleration backend.
+                    description: |-
+                      Type selects the acceleration backend. At pod startup the operator points
+                      Jellyfin's encoding config at it (HardwareAccelerationType nvenc for
+                      nvidia, plus the render device for vaapi/qsv). Omit hardwareAcceleration
+                      entirely for CPU transcoding; the encoding config is then left untouched.
                     enum:
                     - vaapi
                     - qsv
@@ -452,6 +466,40 @@ spec:
                   type: string
                 description: PodAnnotations are merged onto the Jellyfin pod template
                   metadata.
+                type: object
+              podSecurity:
+                description: |-
+                  PodSecurity overrides the operator's hardened pod-security defaults
+                  (non-root UID 1000, all capabilities dropped). Applies to the server pod,
+                  web tier, and plugin workloads that don't set their own override.
+                properties:
+                  fsGroup:
+                    description: FsGroup is the filesystem group applied to all volumes.
+                      Defaults to 1000.
+                    format: int64
+                    type: integer
+                  runAsGroup:
+                    description: RunAsGroup is the primary GID for the pod/container.
+                      Defaults to 1000.
+                    format: int64
+                    type: integer
+                  runAsNonRoot:
+                    description: RunAsNonRoot controls the pod/container non-root
+                      enforcement. Defaults to true.
+                    type: boolean
+                  runAsUser:
+                    description: RunAsUser is the UID for the pod/container. Defaults
+                      to 1000.
+                    format: int64
+                    type: integer
+                  supplementalGroups:
+                    description: |-
+                      SupplementalGroups are additional GIDs applied to the pod (merged with
+                      any groups added by hardware acceleration).
+                    items:
+                      format: int64
+                      type: integer
+                    type: array
                 type: object
               replicas:
                 description: |-

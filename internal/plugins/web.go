@@ -21,13 +21,15 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 
 	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
 )
 
 // DefaultWebPort is the port the web-tier nginx container listens on.
 const DefaultWebPort int32 = 80
+
+// webHealthPath is the nginx health endpoint used by both probes.
+const webHealthPath = "/health"
 
 // WebDeploymentName returns the Deployment name for the web tier.
 func WebDeploymentName(jf *jellyfinv1alpha1.Jellyfin) string {
@@ -45,7 +47,7 @@ func WebLabels(jf *jellyfinv1alpha1.Jellyfin) map[string]string {
 		NameLabel:      WebAppName,
 		InstanceLabel:  jf.Name,
 		ManagedByLabel: ManagedByValue,
-		ComponentLabel: "web",
+		ComponentLabel: WebComponentName,
 	}
 }
 
@@ -57,7 +59,7 @@ func WebSelectorLabels(jf *jellyfinv1alpha1.Jellyfin) map[string]string {
 	return map[string]string{
 		NameLabel:      WebAppName,
 		InstanceLabel:  jf.Name,
-		ComponentLabel: "web",
+		ComponentLabel: WebComponentName,
 	}
 }
 
@@ -70,10 +72,10 @@ func BuildWebDeployment(jf *jellyfinv1alpha1.Jellyfin) *appsv1.Deployment {
 	}
 
 	container := corev1.Container{
-		Name:  "web",
+		Name:  WebComponentName,
 		Image: web.Image,
 		Ports: []corev1.ContainerPort{{
-			Name:          "http",
+			Name:          PortNameHTTP,
 			ContainerPort: DefaultWebPort,
 			Protocol:      corev1.ProtocolTCP,
 		}},
@@ -81,7 +83,7 @@ func BuildWebDeployment(jf *jellyfinv1alpha1.Jellyfin) *appsv1.Deployment {
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
+					Path: webHealthPath,
 					Port: intstr.FromInt32(DefaultWebPort),
 				},
 			},
@@ -91,17 +93,22 @@ func BuildWebDeployment(jf *jellyfinv1alpha1.Jellyfin) *appsv1.Deployment {
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
+					Path: webHealthPath,
 					Port: intstr.FromInt32(DefaultWebPort),
 				},
 			},
 			InitialDelaySeconds: 15,
 			PeriodSeconds:       20,
 		},
-		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr.To(false),
+	}
+
+	podSpec := corev1.PodSpec{
+		Containers: []corev1.Container{container},
+		SecurityContext: &corev1.PodSecurityContext{
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		},
 	}
+	applyPodSecurity(&podSpec.Containers[0], &podSpec, jf.Spec.PodSecurity)
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -117,12 +124,7 @@ func BuildWebDeployment(jf *jellyfinv1alpha1.Jellyfin) *appsv1.Deployment {
 					Labels:      WebSelectorLabels(jf),
 					Annotations: web.PodAnnotations,
 				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{container},
-					SecurityContext: &corev1.PodSecurityContext{
-						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-					},
-				},
+				Spec: podSpec,
 			},
 		},
 	}
@@ -140,7 +142,7 @@ func BuildWebService(jf *jellyfinv1alpha1.Jellyfin) *corev1.Service {
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: WebSelectorLabels(jf),
 			Ports: []corev1.ServicePort{{
-				Name:       "http",
+				Name:       PortNameHTTP,
 				Port:       DefaultWebPort,
 				TargetPort: intstr.FromInt32(DefaultWebPort),
 				Protocol:   corev1.ProtocolTCP,

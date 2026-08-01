@@ -81,7 +81,7 @@ func parseVersion(s string) ([4]int, error) {
 
 // compareVersions returns -1, 0, or 1 for a<b, a==b, a>b.
 func compareVersions(a, b [4]int) int {
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		switch {
 		case a[i] < b[i]:
 			return -1

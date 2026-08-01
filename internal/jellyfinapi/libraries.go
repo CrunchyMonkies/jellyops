@@ -21,9 +21,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 )
+
+// refreshLibraryParam asks Jellyfin to rescan after a library mutation.
+const refreshLibraryParam = "refreshLibrary"
 
 // ListVirtualFolders returns the instance's libraries.
 func (c *Client) ListVirtualFolders(ctx context.Context) ([]VirtualFolder, error) {
@@ -42,7 +45,7 @@ func (c *Client) AddVirtualFolder(ctx context.Context, lib DesiredLibrary, refre
 	for _, p := range lib.Paths {
 		q.Add("paths", p)
 	}
-	q.Set("refreshLibrary", boolStr(refresh))
+	q.Set(refreshLibraryParam, boolStr(refresh))
 	var body any
 	if len(lib.Options) > 0 {
 		body = map[string]any{"LibraryOptions": lib.Options}
@@ -52,20 +55,20 @@ func (c *Client) AddVirtualFolder(ctx context.Context, lib DesiredLibrary, refre
 
 // RemoveVirtualFolder deletes a library by name.
 func (c *Client) RemoveVirtualFolder(ctx context.Context, name string, refresh bool) error {
-	q := url.Values{"name": []string{name}, "refreshLibrary": []string{boolStr(refresh)}}
+	q := url.Values{"name": []string{name}, refreshLibraryParam: {boolStr(refresh)}}
 	return c.do(ctx, http.MethodDelete, "/Library/VirtualFolders", q, nil, nil)
 }
 
 // AddMediaPath adds a path to an existing library.
 func (c *Client) AddMediaPath(ctx context.Context, name, path string, refresh bool) error {
-	q := url.Values{"refreshLibrary": []string{boolStr(refresh)}}
+	q := url.Values{refreshLibraryParam: {boolStr(refresh)}}
 	body := map[string]any{"Name": name, "PathInfo": map[string]string{"Path": path}}
 	return c.do(ctx, http.MethodPost, "/Library/VirtualFolders/Paths", q, body, nil)
 }
 
 // RemoveMediaPath removes a path from an existing library.
 func (c *Client) RemoveMediaPath(ctx context.Context, name, path string, refresh bool) error {
-	q := url.Values{"name": []string{name}, "path": []string{path}, "refreshLibrary": []string{boolStr(refresh)}}
+	q := url.Values{"name": []string{name}, "path": []string{path}, refreshLibraryParam: {boolStr(refresh)}}
 	return c.do(ctx, http.MethodDelete, "/Library/VirtualFolders/Paths", q, nil, nil)
 }
 
@@ -119,6 +122,73 @@ func EnforceReadOnlyOptions(current json.RawMessage) (json.RawMessage, bool, err
 		return nil, false, err
 	}
 	return out, true, nil
+}
+
+// MergeLibraryOptions deep-merges the desired options onto the current library
+// options. For nested JSON objects both sides share, it recurses so sub-keys
+// (e.g. TypeOptions) are merged rather than clobbered. Arrays and scalars in
+// desired overwrite current. Returns the merged JSON and whether anything
+// changed. An empty/nil desired returns current unchanged.
+func MergeLibraryOptions(current, desired json.RawMessage) (json.RawMessage, bool, error) {
+	if len(bytesTrim(desired)) == 0 {
+		return current, false, nil
+	}
+	var curMap map[string]any
+	if len(bytesTrim(current)) > 0 {
+		if err := json.Unmarshal(current, &curMap); err != nil {
+			return nil, false, err
+		}
+	}
+	if curMap == nil {
+		curMap = map[string]any{}
+	}
+	var desMap map[string]any
+	if err := json.Unmarshal(desired, &desMap); err != nil {
+		return nil, false, err
+	}
+
+	deepMerge(curMap, desMap)
+
+	merged, err := json.Marshal(curMap)
+	if err != nil {
+		return nil, false, err
+	}
+	// Compare by re-marshalling original current so whitespace differences
+	// don't trigger a spurious update.
+	origNorm, _ := json.Marshal(jsonToMap(current))
+	changed := string(merged) != string(origNorm)
+	if !changed {
+		return current, false, nil
+	}
+	return merged, true, nil
+}
+
+// deepMerge recursively sets every key from src onto dst. When both dst and src
+// hold a JSON object (map[string]any) for the same key, the function recurses;
+// otherwise the src value wins outright.
+func deepMerge(dst, src map[string]any) {
+	for k, sv := range src {
+		dv, exists := dst[k]
+		if exists {
+			if dm, dok := dv.(map[string]any); dok {
+				if sm, sok := sv.(map[string]any); sok {
+					deepMerge(dm, sm)
+					continue
+				}
+			}
+		}
+		dst[k] = sv
+	}
+}
+
+// jsonToMap unmarshals a JSON blob into a map for normalised comparison.
+// Returns an empty map on nil/empty/error.
+func jsonToMap(raw json.RawMessage) map[string]any {
+	m := map[string]any{}
+	if len(bytesTrim(raw)) > 0 {
+		_ = json.Unmarshal(raw, &m)
+	}
+	return m
 }
 
 func bytesTrim(b json.RawMessage) []byte {
@@ -192,11 +262,11 @@ func DiffLibraries(desired []DesiredLibrary, existing []VirtualFolder, managed [
 				diff.ToRemove = append(diff.ToRemove, f.Name)
 			}
 		}
-		sort.Strings(diff.ToRemove)
+		slices.Sort(diff.ToRemove)
 	}
 
 	// Sort create list for determinism.
-	sort.Slice(diff.ToCreate, func(i, j int) bool { return diff.ToCreate[i].Name < diff.ToCreate[j].Name })
+	slices.SortFunc(diff.ToCreate, func(a, b DesiredLibrary) int { return strings.Compare(a.Name, b.Name) })
 	return diff
 }
 

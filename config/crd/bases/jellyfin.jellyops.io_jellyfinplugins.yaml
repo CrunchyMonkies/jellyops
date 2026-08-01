@@ -1011,6 +1011,40 @@ spec:
                       description: NodeSelector constrains the workload to nodes with
                         matching labels (e.g. a GPU node).
                       type: object
+                    podSecurity:
+                      description: |-
+                        PodSecurity overrides the instance-level pod-security defaults for this
+                        workload. When nil, the bound Jellyfin instance's podSecurity (or the
+                        operator hardened default) applies.
+                      properties:
+                        fsGroup:
+                          description: FsGroup is the filesystem group applied to
+                            all volumes. Defaults to 1000.
+                          format: int64
+                          type: integer
+                        runAsGroup:
+                          description: RunAsGroup is the primary GID for the pod/container.
+                            Defaults to 1000.
+                          format: int64
+                          type: integer
+                        runAsNonRoot:
+                          description: RunAsNonRoot controls the pod/container non-root
+                            enforcement. Defaults to true.
+                          type: boolean
+                        runAsUser:
+                          description: RunAsUser is the UID for the pod/container.
+                            Defaults to 1000.
+                          format: int64
+                          type: integer
+                        supplementalGroups:
+                          description: |-
+                            SupplementalGroups are additional GIDs applied to the pod (merged with
+                            any groups added by hardware acceleration).
+                          items:
+                            format: int64
+                            type: integer
+                          type: array
+                      type: object
                     ports:
                       description: Ports the workload container exposes.
                       items:

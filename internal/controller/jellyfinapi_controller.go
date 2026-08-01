@@ -23,7 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -274,8 +274,8 @@ func (r *JellyfinAPIReconciler) reconcileLibraries(ctx context.Context, jf *jell
 		}
 	}
 
-	// Enforce write-disabling options for read-only media libraries so Jellyfin
-	// never writes .nfo/subtitles into a read-only mount. Re-list after creates so
+	// Enforce library options: read-only flags for PreventWrites libraries and
+	// user-declared Options for all libraries. Re-list after creates so
 	// newly-created libraries are included with their full (default) options.
 	folders := existing
 	if len(diff.ToCreate) > 0 {
@@ -283,29 +283,9 @@ func (r *JellyfinAPIReconciler) reconcileLibraries(ctx context.Context, jf *jell
 			return err
 		}
 	}
-	byName := make(map[string]jellyfinapi.VirtualFolder, len(folders))
-	for _, f := range folders {
-		byName[f.Name] = f
-	}
-	optsChanged := false
-	for _, d := range desired {
-		if !d.PreventWrites {
-			continue
-		}
-		f, ok := byName[d.Name]
-		if !ok || f.ItemID == "" {
-			continue
-		}
-		updated, changed, err := jellyfinapi.EnforceReadOnlyOptions(f.LibraryOptions)
-		if err != nil {
-			return err
-		}
-		if changed {
-			if err := cli.UpdateLibraryOptions(ctx, f.ItemID, updated); err != nil {
-				return err
-			}
-			optsChanged = true
-		}
+	optsChanged, err := enforceLibraryOptions(ctx, cli, desired, folders)
+	if err != nil {
+		return err
 	}
 
 	if (diff.Changed() || optsChanged) && refresh {
@@ -318,9 +298,58 @@ func (r *JellyfinAPIReconciler) reconcileLibraries(ctx context.Context, jf *jell
 	for _, d := range desired {
 		names = append(names, d.Name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	jf.Status.ManagedLibraries = names
 	return nil
+}
+
+// enforceLibraryOptions applies read-only flags (PreventWrites) and user-declared
+// Options onto each desired library's current options, POSTing back only the
+// libraries whose options actually changed. Returns whether any library changed.
+func enforceLibraryOptions(ctx context.Context, cli APIClient, desired []jellyfinapi.DesiredLibrary, folders []jellyfinapi.VirtualFolder) (bool, error) {
+	byName := make(map[string]jellyfinapi.VirtualFolder, len(folders))
+	for _, f := range folders {
+		byName[f.Name] = f
+	}
+	anyChanged := false
+	for _, d := range desired {
+		f, ok := byName[d.Name]
+		if !ok || f.ItemID == "" {
+			continue
+		}
+		merged := f.LibraryOptions
+		libChanged := false
+
+		if d.PreventWrites {
+			updated, changed, err := jellyfinapi.EnforceReadOnlyOptions(merged)
+			if err != nil {
+				return false, err
+			}
+			if changed {
+				merged = updated
+				libChanged = true
+			}
+		}
+
+		if len(d.Options) > 0 {
+			updated, changed, err := jellyfinapi.MergeLibraryOptions(merged, d.Options)
+			if err != nil {
+				return false, err
+			}
+			if changed {
+				merged = updated
+				libChanged = true
+			}
+		}
+
+		if libChanged {
+			if err := cli.UpdateLibraryOptions(ctx, f.ItemID, merged); err != nil {
+				return false, err
+			}
+			anyChanged = true
+		}
+	}
+	return anyChanged, nil
 }
 
 // desiredLibraries derives the intended libraries from media folders that carry

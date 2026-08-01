@@ -241,3 +241,118 @@ func TestEnforceReadOnlyOptionsNullInput(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeLibraryOptionsDeepMerge(t *testing.T) {
+	cur := json.RawMessage(`{
+		"EnableTrickplayImageExtraction":false,
+		"TypeOptions":{
+			"Type":"Movie",
+			"MetadataFetchers":["TheMovieDb"]
+		},
+		"PreferredMetadataLanguage":"en"
+	}`)
+	desired := json.RawMessage(`{
+		"EnableTrickplayImageExtraction":true,
+		"TypeOptions":{
+			"ImageFetchers":["TheMovieDb"]
+		}
+	}`)
+	out, changed, err := MergeLibraryOptions(cur, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["EnableTrickplayImageExtraction"] != true {
+		t.Errorf("scalar override failed: %s", out)
+	}
+	if got["PreferredMetadataLanguage"] != "en" {
+		t.Errorf("unrelated field clobbered: %s", out)
+	}
+	to, ok := got["TypeOptions"].(map[string]any)
+	if !ok {
+		t.Fatalf("TypeOptions not a map: %s", out)
+	}
+	if to["Type"] != "Movie" {
+		t.Errorf("nested existing key lost: %s", out)
+	}
+	if to["MetadataFetchers"] == nil {
+		t.Errorf("nested existing array lost: %s", out)
+	}
+	if to["ImageFetchers"] == nil {
+		t.Errorf("nested new key not merged: %s", out)
+	}
+}
+
+func TestMergeLibraryOptionsNoChange(t *testing.T) {
+	cur := json.RawMessage(`{"EnableTrickplayImageExtraction":true,"OtherField":"keep"}`)
+	desired := json.RawMessage(`{"EnableTrickplayImageExtraction":true}`)
+	out, changed, err := MergeLibraryOptions(cur, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Errorf("expected changed=false, got out=%s", out)
+	}
+}
+
+func TestMergeLibraryOptionsEmptyDesired(t *testing.T) {
+	cur := json.RawMessage(`{"EnableTrickplayImageExtraction":false}`)
+	for _, d := range []json.RawMessage{nil, json.RawMessage(`null`), json.RawMessage(``)} {
+		out, changed, err := MergeLibraryOptions(cur, d)
+		if err != nil {
+			t.Fatalf("desired %q: %v", d, err)
+		}
+		if changed {
+			t.Errorf("desired %q: expected changed=false", d)
+		}
+		if string(out) != string(cur) {
+			t.Errorf("desired %q: expected original returned, got %s", d, out)
+		}
+	}
+}
+
+func TestMergeLibraryOptionsNullCurrent(t *testing.T) {
+	desired := json.RawMessage(`{"EnableTrickplayImageExtraction":true}`)
+	for _, c := range []json.RawMessage{nil, json.RawMessage(`null`), json.RawMessage(``)} {
+		out, changed, err := MergeLibraryOptions(c, desired)
+		if err != nil {
+			t.Fatalf("current %q: %v", c, err)
+		}
+		if !changed {
+			t.Errorf("current %q: expected changed=true", c)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("current %q: %v", c, err)
+		}
+		if got["EnableTrickplayImageExtraction"] != true {
+			t.Errorf("current %q: out = %s", c, out)
+		}
+	}
+}
+
+func TestMergeLibraryOptionsArrayOverwrite(t *testing.T) {
+	cur := json.RawMessage(`{"MetadataSavers":["Nfo"]}`)
+	desired := json.RawMessage(`{"MetadataSavers":[]}`)
+	out, changed, err := MergeLibraryOptions(cur, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	arr, ok := got["MetadataSavers"].([]any)
+	if !ok || len(arr) != 0 {
+		t.Errorf("array overwrite failed: %s", out)
+	}
+}

@@ -138,6 +138,12 @@ type PluginWorkload struct {
 	// +optional
 	RuntimeClassName string `json:"runtimeClassName,omitempty"`
 
+	// PodSecurity overrides the instance-level pod-security defaults for this
+	// workload. When nil, the bound Jellyfin instance's podSecurity (or the
+	// operator hardened default) applies.
+	// +optional
+	PodSecurity *PodSecuritySpec `json:"podSecurity,omitempty"`
+
 	// ReadinessProbe gates whether the workload pod is Ready (and therefore counted
 	// toward the WorkloadsReady condition and reachable via a plugin Service). Use it
 	// for workloads that take time to become serviceable (e.g. a Shoko Server that

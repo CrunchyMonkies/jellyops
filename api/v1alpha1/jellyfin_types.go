@@ -70,6 +70,12 @@ type JellyfinSpec struct {
 	// +optional
 	HardwareAcceleration *HardwareAccel `json:"hardwareAcceleration,omitempty"`
 
+	// PodSecurity overrides the operator's hardened pod-security defaults
+	// (non-root UID 1000, all capabilities dropped). Applies to the server pod,
+	// web tier, and plugin workloads that don't set their own override.
+	// +optional
+	PodSecurity *PodSecuritySpec `json:"podSecurity,omitempty"`
+
 	// API enables day-2 reconciliation of in-app state (libraries) via Jellyfin's
 	// HTTP API on :8096 (see spec §7.6).
 	// +optional
