@@ -298,7 +298,11 @@ spec:
                       "nvidia".
                     type: string
                   type:
-                    description: Type selects the acceleration backend.
+                    description: |-
+                      Type selects the acceleration backend. At pod startup the operator points
+                      Jellyfin's encoding config at it (HardwareAccelerationType nvenc for
+                      nvidia, plus the render device for vaapi/qsv). Omit hardwareAcceleration
+                      entirely for CPU transcoding; the encoding config is then left untouched.
                     enum:
                     - vaapi
                     - qsv

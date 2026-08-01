@@ -64,7 +64,10 @@ type IngressTLS struct {
 
 // HardwareAccel attaches a transcoding accelerator device to the Jellyfin pod.
 type HardwareAccel struct {
-	// Type selects the acceleration backend.
+	// Type selects the acceleration backend. At pod startup the operator points
+	// Jellyfin's encoding config at it (HardwareAccelerationType nvenc for
+	// nvidia, plus the render device for vaapi/qsv). Omit hardwareAcceleration
+	// entirely for CPU transcoding; the encoding config is then left untouched.
 	// +kubebuilder:validation:Enum=vaapi;qsv;nvidia
 	Type string `json:"type"`
 

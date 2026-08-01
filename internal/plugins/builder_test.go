@@ -395,6 +395,9 @@ func TestHardwareAccelDeviceResource(t *testing.T) {
 	if !hasEnv(c.Env, RenderVendorEnvVar, "0x8086") {
 		t.Errorf("qsv should set %s=0x8086: %+v", RenderVendorEnvVar, c.Env)
 	}
+	if !hasEnv(c.Env, AccelTypeEnvVar, "qsv") {
+		t.Errorf("qsv should set %s=qsv: %+v", AccelTypeEnvVar, c.Env)
+	}
 	if len(c.Command) != 3 || !strings.Contains(c.Command[2], "encoding.xml") {
 		t.Errorf("startup wrapper missing: %v", c.Command)
 	}
@@ -437,6 +440,16 @@ func TestHardwareAccelExplicitDevicePath(t *testing.T) {
 	}
 }
 
+func TestNoHardwareAccelKeepsStockCommand(t *testing.T) {
+	// CPU transcoding: no wrapper, no config sync — the image entrypoint and
+	// Jellyfin's own encoding config are left untouched.
+	jf := baseInstance()
+	pod, _ := BuildPodTemplateSpec(jf, nil)
+	if pod.Spec.Containers[0].Command != nil {
+		t.Errorf("without hardwareAcceleration the entrypoint must be untouched: %v", pod.Spec.Containers[0].Command)
+	}
+}
+
 func hasEnv(env []corev1.EnvVar, name, value string) bool {
 	for _, e := range env {
 		if e.Name == name && e.Value == value {
@@ -465,6 +478,13 @@ func TestHardwareAccelNvidia(t *testing.T) {
 	}
 	if pod.Spec.RuntimeClassName == nil || *pod.Spec.RuntimeClassName != "nvidia" {
 		t.Error("runtimeClassName not set")
+	}
+	// The startup sync must switch Jellyfin's encoder backend to NVENC.
+	if !hasEnv(jfc.Env, AccelTypeEnvVar, "nvenc") {
+		t.Errorf("nvidia should set %s=nvenc: %+v", AccelTypeEnvVar, jfc.Env)
+	}
+	if len(jfc.Command) != 3 || !strings.Contains(jfc.Command[2], "HardwareAccelerationType") {
+		t.Errorf("startup wrapper missing: %v", jfc.Command)
 	}
 }
 

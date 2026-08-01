@@ -39,51 +39,73 @@ const (
 	RenderDeviceEnvVar = "JELLYOPS_RENDER_DEVICE"
 	// RenderVendorEnvVar restricts the startup scan to one PCI vendor id.
 	RenderVendorEnvVar = "JELLYOPS_RENDER_VENDOR"
+	// AccelTypeEnvVar carries Jellyfin's HardwareAccelerationType value so the
+	// startup sync switches the encoder backend to the accelerator the CR
+	// declares (nvenc for nvidia; vaapi/qsv as-is).
+	AccelTypeEnvVar = "JELLYOPS_ACCEL_TYPE"
 	// intelPCIVendorID is Intel's PCI vendor id as sysfs reports it; qsv is
 	// Intel-only, so the scan prefers an Intel node on multi-GPU hosts.
 	intelPCIVendorID = "0x8086"
+	// jellyfinNvenc is Jellyfin's HardwareAccelerationType for NVIDIA GPUs.
+	jellyfinNvenc = "nvenc"
 
 	nvidiaGPUResource = "nvidia.com/gpu"
 )
 
-// renderSetupScript runs before the Jellyfin binary. The render node is not
-// always renderD128 (multi-GPU hosts and device plugins yield renderD129,
-// renderD130, ...), so the script scans /dev/dri for the node this container
-// can actually see and points Jellyfin's encoding.xml (VaapiDevice/QsvDevice)
-// at it. JELLYOPS_RENDER_DEVICE skips the scan; JELLYOPS_RENDER_VENDOR
-// restricts it by PCI vendor, falling back to the first node when no vendor
-// matches.
-const renderSetupScript = `dev="${JELLYOPS_RENDER_DEVICE:-}"
-if [ -z "$dev" ] && [ -n "${JELLYOPS_RENDER_VENDOR:-}" ]; then
-  for d in /dev/dri/renderD*; do
-    [ -c "$d" ] || continue
-    v="$(cat "/sys/class/drm/$(basename "$d")/device/vendor" 2>/dev/null || true)"
-    if [ "$v" = "$JELLYOPS_RENDER_VENDOR" ]; then dev="$d"; break; fi
-  done
+// renderSetupScript runs before the Jellyfin binary and syncs Jellyfin's
+// encoding.xml to the accelerator the CR declares. For vaapi/qsv it scans
+// /dev/dri for the render node this container can actually see — the node is
+// not always renderD128 (multi-GPU hosts and device plugins yield renderD129,
+// renderD130, ...) — and points VaapiDevice/QsvDevice at it. For nvenc no
+// device scan is needed (the NVIDIA runtime injects its own device nodes).
+// JELLYOPS_ACCEL_TYPE sets HardwareAccelerationType; JELLYOPS_RENDER_DEVICE
+// skips the scan; JELLYOPS_RENDER_VENDOR restricts it by PCI vendor, falling
+// back to the first node when no vendor matches. If a scan finds no device,
+// the config is left untouched so Jellyfin does not switch to a broken
+// backend.
+const renderSetupScript = `accel="${JELLYOPS_ACCEL_TYPE:-}"
+dev="${JELLYOPS_RENDER_DEVICE:-}"
+if [ "$accel" != "nvenc" ]; then
+  if [ -z "$dev" ] && [ -n "${JELLYOPS_RENDER_VENDOR:-}" ]; then
+    for d in /dev/dri/renderD*; do
+      [ -c "$d" ] || continue
+      v="$(cat "/sys/class/drm/$(basename "$d")/device/vendor" 2>/dev/null || true)"
+      if [ "$v" = "$JELLYOPS_RENDER_VENDOR" ]; then dev="$d"; break; fi
+    done
+  fi
+  if [ -z "$dev" ]; then
+    for d in /dev/dri/renderD*; do
+      if [ -c "$d" ]; then dev="$d"; break; fi
+    done
+  fi
+  if [ -z "$dev" ]; then
+    echo "jellyops: no render device found under /dev/dri; leaving encoding config untouched" >&2
+    accel=""
+  fi
 fi
-if [ -z "$dev" ]; then
-  for d in /dev/dri/renderD*; do
-    if [ -c "$d" ]; then dev="$d"; break; fi
-  done
-fi
-if [ -n "$dev" ]; then
-  echo "jellyops: using render device $dev"
+if [ -n "$accel" ] || [ -n "$dev" ]; then
   cfgdir="${JELLYFIN_CONFIG_DIR:-${JELLYFIN_DATA_DIR:-/config}/config}"
   mkdir -p "$cfgdir"
   f="$cfgdir/encoding.xml"
   if [ ! -f "$f" ]; then
-    printf '<?xml version="1.0" encoding="utf-8"?>\n<EncodingOptions>\n  <VaapiDevice>%s</VaapiDevice>\n  <QsvDevice>%s</QsvDevice>\n</EncodingOptions>\n' "$dev" "$dev" >"$f"
-  else
-    for tag in VaapiDevice QsvDevice; do
-      if grep -q "<$tag>" "$f"; then
-        sed -i "s#<$tag>[^<]*</$tag>#<$tag>$dev</$tag>#" "$f"
-      else
-        sed -i "s#</EncodingOptions>#  <$tag>$dev</$tag>\n</EncodingOptions>#" "$f"
-      fi
-    done
+    printf '<?xml version="1.0" encoding="utf-8"?>\n<EncodingOptions>\n</EncodingOptions>\n' >"$f"
   fi
-else
-  echo "jellyops: no render device found under /dev/dri" >&2
+  set_tag() {
+    if grep -q "<$1>" "$f"; then
+      sed -i "s#<$1>[^<]*</$1>#<$1>$2</$1>#" "$f"
+    else
+      sed -i "s#</EncodingOptions>#  <$1>$2</$1>\n</EncodingOptions>#" "$f"
+    fi
+  }
+  if [ -n "$dev" ]; then
+    echo "jellyops: using render device $dev"
+    set_tag VaapiDevice "$dev"
+    set_tag QsvDevice "$dev"
+  fi
+  if [ -n "$accel" ]; then
+    echo "jellyops: hardware acceleration type $accel"
+    set_tag HardwareAccelerationType "$accel"
+  fi
 fi
 `
 
@@ -124,7 +146,8 @@ func applyHardwareAccel(pod *corev1.PodSpec, hw *jellyfinv1alpha1.HardwareAccel)
 		}
 
 		// Startup wrapper: resolve the render node visible to this container and
-		// sync Jellyfin's encoding config to it before the server starts.
+		// switch Jellyfin's encoding config to it before the server starts.
+		jellyfin.Env = append(jellyfin.Env, corev1.EnvVar{Name: AccelTypeEnvVar, Value: hw.Type})
 		if hw.DevicePath != "" {
 			jellyfin.Env = append(jellyfin.Env, corev1.EnvVar{Name: RenderDeviceEnvVar, Value: hw.DevicePath})
 		}
@@ -145,6 +168,10 @@ func applyHardwareAccel(pod *corev1.PodSpec, hw *jellyfinv1alpha1.HardwareAccel)
 		if hw.RuntimeClassName != "" {
 			pod.RuntimeClassName = ptr.To(hw.RuntimeClassName)
 		}
+		// Startup wrapper: switch Jellyfin's encoder backend to NVENC. The NVIDIA
+		// runtime injects the device nodes, so no scan is needed.
+		jellyfin.Env = append(jellyfin.Env, corev1.EnvVar{Name: AccelTypeEnvVar, Value: jellyfinNvenc})
+		jellyfin.Command = []string{"/bin/sh", "-c", renderSetupScript + "exec " + DefaultJellyfinCommand}
 	}
 }
 
