@@ -210,7 +210,7 @@ func (r *JellyfinReconciler) growPVC(ctx context.Context, pvc *corev1.Persistent
 		patched.Spec.Resources.Requests = corev1.ResourceList{}
 	}
 	patched.Spec.Resources.Requests[corev1.ResourceStorage] = size
-	if err := r.Client.Patch(ctx, patched, client.MergeFrom(pvc)); err != nil {
+	if err := r.Patch(ctx, patched, client.MergeFrom(pvc)); err != nil {
 		if apierrors.IsForbidden(err) || apierrors.IsInvalid(err) {
 			log.Error(err, "PVC expansion rejected; the storage class may not allow volume expansion",
 				"pvc", pvc.Name, "current", cur.String(), "requested", size.String())
