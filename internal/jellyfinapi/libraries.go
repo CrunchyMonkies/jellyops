@@ -21,9 +21,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 )
+
+// refreshLibraryParam asks Jellyfin to rescan after a library mutation.
+const refreshLibraryParam = "refreshLibrary"
 
 // ListVirtualFolders returns the instance's libraries.
 func (c *Client) ListVirtualFolders(ctx context.Context) ([]VirtualFolder, error) {
@@ -42,7 +45,7 @@ func (c *Client) AddVirtualFolder(ctx context.Context, lib DesiredLibrary, refre
 	for _, p := range lib.Paths {
 		q.Add("paths", p)
 	}
-	q.Set("refreshLibrary", boolStr(refresh))
+	q.Set(refreshLibraryParam, boolStr(refresh))
 	var body any
 	if len(lib.Options) > 0 {
 		body = map[string]any{"LibraryOptions": lib.Options}
@@ -52,20 +55,20 @@ func (c *Client) AddVirtualFolder(ctx context.Context, lib DesiredLibrary, refre
 
 // RemoveVirtualFolder deletes a library by name.
 func (c *Client) RemoveVirtualFolder(ctx context.Context, name string, refresh bool) error {
-	q := url.Values{"name": []string{name}, "refreshLibrary": []string{boolStr(refresh)}}
+	q := url.Values{"name": []string{name}, refreshLibraryParam: {boolStr(refresh)}}
 	return c.do(ctx, http.MethodDelete, "/Library/VirtualFolders", q, nil, nil)
 }
 
 // AddMediaPath adds a path to an existing library.
 func (c *Client) AddMediaPath(ctx context.Context, name, path string, refresh bool) error {
-	q := url.Values{"refreshLibrary": []string{boolStr(refresh)}}
+	q := url.Values{refreshLibraryParam: {boolStr(refresh)}}
 	body := map[string]any{"Name": name, "PathInfo": map[string]string{"Path": path}}
 	return c.do(ctx, http.MethodPost, "/Library/VirtualFolders/Paths", q, body, nil)
 }
 
 // RemoveMediaPath removes a path from an existing library.
 func (c *Client) RemoveMediaPath(ctx context.Context, name, path string, refresh bool) error {
-	q := url.Values{"name": []string{name}, "path": []string{path}, "refreshLibrary": []string{boolStr(refresh)}}
+	q := url.Values{"name": []string{name}, "path": []string{path}, refreshLibraryParam: {boolStr(refresh)}}
 	return c.do(ctx, http.MethodDelete, "/Library/VirtualFolders/Paths", q, nil, nil)
 }
 
@@ -259,11 +262,11 @@ func DiffLibraries(desired []DesiredLibrary, existing []VirtualFolder, managed [
 				diff.ToRemove = append(diff.ToRemove, f.Name)
 			}
 		}
-		sort.Strings(diff.ToRemove)
+		slices.Sort(diff.ToRemove)
 	}
 
 	// Sort create list for determinism.
-	sort.Slice(diff.ToCreate, func(i, j int) bool { return diff.ToCreate[i].Name < diff.ToCreate[j].Name })
+	slices.SortFunc(diff.ToCreate, func(a, b DesiredLibrary) int { return strings.Compare(a.Name, b.Name) })
 	return diff
 }
 

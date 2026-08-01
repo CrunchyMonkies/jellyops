@@ -29,29 +29,14 @@ const (
 	DefaultFsGroup    int64 = 1000
 )
 
-func effectiveBool(override *bool, fallback bool) bool {
-	if override != nil {
-		return *override
-	}
-	return fallback
-}
-
-func effectiveInt64(override *int64, fallback int64) int64 {
-	if override != nil {
-		return *override
-	}
-	return fallback
-}
-
 // applyPodSecurity sets the hardened pod-security defaults on a container and
 // pod spec, merging any user overrides from ps. It is safe to call with ps==nil
 // (pure defaults apply). Existing fields on the pod SecurityContext (e.g.
 // SeccompProfile, SupplementalGroups from hw-accel) are preserved.
 func applyPodSecurity(container *corev1.Container, pod *corev1.PodSpec, ps *jellyfinv1alpha1.PodSecuritySpec) {
-	// Opt-out: an explicit runAsNonRoot=false disables the hardened profile for this
-	// workload, preserving legacy behavior (root allowed, capabilities intact) for
-	// third-party service workloads (e.g. Shoko) not yet ready for non-root. Keep only
-	// allowPrivilegeEscalation=false; the pod-level SeccompProfile set by the caller stays.
+	// Explicit runAsNonRoot=false opts out of the hardened profile (legacy
+	// passthrough for workloads not yet ready for non-root, e.g. Shoko); only
+	// allowPrivilegeEscalation=false is kept.
 	if ps != nil && ps.RunAsNonRoot != nil && !*ps.RunAsNonRoot {
 		if container.SecurityContext == nil {
 			container.SecurityContext = &corev1.SecurityContext{}
@@ -67,10 +52,10 @@ func applyPodSecurity(container *corev1.Container, pod *corev1.PodSpec, ps *jell
 	var supplemental []int64
 
 	if ps != nil {
-		nonRoot = effectiveBool(ps.RunAsNonRoot, nonRoot)
-		uid = effectiveInt64(ps.RunAsUser, uid)
-		gid = effectiveInt64(ps.RunAsGroup, gid)
-		fsGroup = effectiveInt64(ps.FsGroup, fsGroup)
+		nonRoot = ptr.Deref(ps.RunAsNonRoot, nonRoot)
+		uid = ptr.Deref(ps.RunAsUser, uid)
+		gid = ptr.Deref(ps.RunAsGroup, gid)
+		fsGroup = ptr.Deref(ps.FsGroup, fsGroup)
 		supplemental = ps.SupplementalGroups
 	}
 
@@ -115,9 +100,9 @@ func applyContainerSecurity(container *corev1.Container, ps *jellyfinv1alpha1.Po
 	gid := DefaultRunAsGroup
 
 	if ps != nil {
-		nonRoot = effectiveBool(ps.RunAsNonRoot, nonRoot)
-		uid = effectiveInt64(ps.RunAsUser, uid)
-		gid = effectiveInt64(ps.RunAsGroup, gid)
+		nonRoot = ptr.Deref(ps.RunAsNonRoot, nonRoot)
+		uid = ptr.Deref(ps.RunAsUser, uid)
+		gid = ptr.Deref(ps.RunAsGroup, gid)
 	}
 
 	if container.SecurityContext == nil {

@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"sort"
+	"slices"
 )
 
 // Jellyfin configuration stores. Both are full-object replace: GET returns the whole
@@ -84,7 +84,7 @@ func overlayConfig(current json.RawMessage, managed map[string]any) (json.RawMes
 	for k := range managed {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 
 	changed := false
 	for _, key := range keys {

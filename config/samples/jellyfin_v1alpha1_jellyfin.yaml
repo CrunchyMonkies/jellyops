@@ -61,7 +61,10 @@ spec:
       secretName: jellyfin-tls
   hardwareAcceleration:
     type: vaapi
-    devicePath: /dev/dri/renderD128
+    # Prefer a device-plugin resource; without it /dev/dri is hostPath-mounted.
+    # The render device is auto-detected at startup either way; set devicePath
+    # only to pin a specific node.
+    deviceResource: gpu.intel.com/xe
     renderGroupGID: 44
   pluginSelector:
     matchLabels:

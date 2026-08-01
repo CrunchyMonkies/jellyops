@@ -372,6 +372,102 @@ func TestHardwareAccelVAAPI(t *testing.T) {
 	}
 }
 
+func TestHardwareAccelDeviceResource(t *testing.T) {
+	jf := baseInstance()
+	jf.Spec.HardwareAcceleration = &jellyfinv1alpha1.HardwareAccel{
+		Type:           "qsv",
+		DeviceResource: "gpu.intel.com/xe",
+		RenderGroupGID: ptr.To(int64(44)),
+	}
+	pod, _ := BuildPodTemplateSpec(jf, nil)
+
+	if v := findVolume(pod.Spec.Volumes, "dri-device"); v != nil {
+		t.Error("device-plugin path must not add a hostPath volume")
+	}
+	c := pod.Spec.Containers[0]
+	if _, ok := c.Resources.Limits["gpu.intel.com/xe"]; !ok {
+		t.Errorf("device-plugin resource limit missing: %+v", c.Resources.Limits)
+	}
+	if len(pod.Spec.SecurityContext.SupplementalGroups) != 1 || pod.Spec.SecurityContext.SupplementalGroups[0] != 44 {
+		t.Errorf("render group not set: %+v", pod.Spec.SecurityContext.SupplementalGroups)
+	}
+	// qsv is Intel-only: the startup scan is vendor-restricted.
+	if !hasEnv(c.Env, RenderVendorEnvVar, "0x8086") {
+		t.Errorf("qsv should set %s=0x8086: %+v", RenderVendorEnvVar, c.Env)
+	}
+	if !hasEnv(c.Env, AccelTypeEnvVar, "qsv") {
+		t.Errorf("qsv should set %s=qsv: %+v", AccelTypeEnvVar, c.Env)
+	}
+	if len(c.Command) != 3 || !strings.Contains(c.Command[2], "encoding.xml") {
+		t.Errorf("startup wrapper missing: %v", c.Command)
+	}
+}
+
+func TestHardwareAccelAutoDetect(t *testing.T) {
+	// No devicePath: mount all of /dev/dri and detect the render node at startup,
+	// since it is not always renderD128.
+	jf := baseInstance()
+	jf.Spec.HardwareAcceleration = &jellyfinv1alpha1.HardwareAccel{Type: "vaapi"}
+	pod, _ := BuildPodTemplateSpec(jf, nil)
+
+	v := findVolume(pod.Spec.Volumes, "dri-device")
+	if v == nil || v.HostPath == nil || v.HostPath.Path != "/dev/dri" || *v.HostPath.Type != corev1.HostPathDirectory {
+		t.Fatalf("expected /dev/dri directory hostPath volume, got %+v", v)
+	}
+	c := pod.Spec.Containers[0]
+	if hasEnvName(c.Env, RenderDeviceEnvVar) {
+		t.Errorf("%s must be unset so the scan runs: %+v", RenderDeviceEnvVar, c.Env)
+	}
+	if hasEnvName(c.Env, RenderVendorEnvVar) {
+		t.Errorf("vaapi must not restrict the scan by vendor: %+v", c.Env)
+	}
+	if len(c.Command) != 3 || !strings.Contains(c.Command[2], "renderD*") {
+		t.Errorf("startup scan missing from command: %v", c.Command)
+	}
+}
+
+func TestHardwareAccelExplicitDevicePath(t *testing.T) {
+	jf := baseInstance()
+	jf.Spec.HardwareAcceleration = &jellyfinv1alpha1.HardwareAccel{Type: "vaapi", DevicePath: "/dev/dri/renderD129"}
+	pod, _ := BuildPodTemplateSpec(jf, nil)
+
+	v := findVolume(pod.Spec.Volumes, "dri-device")
+	if v == nil || v.HostPath == nil || v.HostPath.Path != "/dev/dri/renderD129" || *v.HostPath.Type != corev1.HostPathCharDev {
+		t.Fatalf("expected pinned char-dev hostPath volume, got %+v", v)
+	}
+	if !hasEnv(pod.Spec.Containers[0].Env, RenderDeviceEnvVar, "/dev/dri/renderD129") {
+		t.Errorf("%s should pin the device for the startup config sync: %+v", RenderDeviceEnvVar, pod.Spec.Containers[0].Env)
+	}
+}
+
+func TestNoHardwareAccelKeepsStockCommand(t *testing.T) {
+	// CPU transcoding: no wrapper, no config sync — the image entrypoint and
+	// Jellyfin's own encoding config are left untouched.
+	jf := baseInstance()
+	pod, _ := BuildPodTemplateSpec(jf, nil)
+	if pod.Spec.Containers[0].Command != nil {
+		t.Errorf("without hardwareAcceleration the entrypoint must be untouched: %v", pod.Spec.Containers[0].Command)
+	}
+}
+
+func hasEnv(env []corev1.EnvVar, name, value string) bool {
+	for _, e := range env {
+		if e.Name == name && e.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEnvName(env []corev1.EnvVar, name string) bool {
+	for _, e := range env {
+		if e.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestHardwareAccelNvidia(t *testing.T) {
 	jf := baseInstance()
 	jf.Spec.HardwareAcceleration = &jellyfinv1alpha1.HardwareAccel{Type: "nvidia", RuntimeClassName: "nvidia"}
@@ -382,6 +478,13 @@ func TestHardwareAccelNvidia(t *testing.T) {
 	}
 	if pod.Spec.RuntimeClassName == nil || *pod.Spec.RuntimeClassName != "nvidia" {
 		t.Error("runtimeClassName not set")
+	}
+	// The startup sync must switch Jellyfin's encoder backend to NVENC.
+	if !hasEnv(jfc.Env, AccelTypeEnvVar, "nvenc") {
+		t.Errorf("nvidia should set %s=nvenc: %+v", AccelTypeEnvVar, jfc.Env)
+	}
+	if len(jfc.Command) != 3 || !strings.Contains(jfc.Command[2], "HardwareAccelerationType") {
+		t.Errorf("startup wrapper missing: %v", jfc.Command)
 	}
 }
 

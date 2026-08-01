@@ -34,7 +34,7 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "jellyops-system"
+const namespace = "jellyfin-operator"
 
 // serviceAccountName created for the project
 const serviceAccountName = "jellyops-controller-manager"

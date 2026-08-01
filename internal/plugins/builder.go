@@ -19,13 +19,12 @@ package plugins
 import (
 	"fmt"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	jellyfinv1alpha1 "github.com/crunchymonkies/jellyops/api/v1alpha1"
 )
@@ -70,7 +69,7 @@ func BuildDeployment(jf *jellyfinv1alpha1.Jellyfin, plugins []jellyfinv1alpha1.J
 func BuildPodTemplateSpec(jf *jellyfinv1alpha1.Jellyfin, plugins []jellyfinv1alpha1.JellyfinPlugin) (corev1.PodTemplateSpec, error) {
 	// Sort plugins by name for deterministic volume/init-container ordering.
 	sorted := append([]jellyfinv1alpha1.JellyfinPlugin(nil), plugins...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	slices.SortFunc(sorted, func(a, b jellyfinv1alpha1.JellyfinPlugin) int { return strings.Compare(a.Name, b.Name) })
 
 	image := jf.Spec.Image
 	if image == "" {
@@ -81,7 +80,7 @@ func BuildPodTemplateSpec(jf *jellyfinv1alpha1.Jellyfin, plugins []jellyfinv1alp
 		Name:  JellyfinContainerName,
 		Image: image,
 		Ports: []corev1.ContainerPort{{
-			Name:          "http",
+			Name:          PortNameHTTP,
 			ContainerPort: DefaultJellyfinPort,
 			Protocol:      corev1.ProtocolTCP,
 		}},
@@ -332,10 +331,12 @@ func installContainer(defaultImage string, p *jellyfinv1alpha1.JellyfinPlugin) (
 	folder := PluginFolderName(EffectiveMeta(p))
 	wrapper := buildInstallWrapper(folder, p.Name, inst)
 
-	mounts := []corev1.VolumeMount{{Name: ConfigVolumeName, MountPath: ConfigMountPath}}
+	mounts := make([]corev1.VolumeMount, 0, 1+len(inst.VolumeMounts))
+	mounts = append(mounts, corev1.VolumeMount{Name: ConfigVolumeName, MountPath: ConfigMountPath})
 	mounts = append(mounts, inst.VolumeMounts...)
 
-	env := []corev1.EnvVar{{Name: installScriptEnvVar, Value: body}}
+	env := make([]corev1.EnvVar, 0, 1+len(inst.Env))
+	env = append(env, corev1.EnvVar{Name: installScriptEnvVar, Value: body})
 	env = append(env, inst.Env...)
 
 	return corev1.Container{
@@ -482,40 +483,4 @@ func buildHookWrapper(folder, pluginName string, inst *jellyfinv1alpha1.PluginIn
 	}
 	b.WriteString("exit 0\n")
 	return b.String()
-}
-
-// applyHardwareAccel attaches a transcoding device to the pod/container.
-func applyHardwareAccel(pod *corev1.PodSpec, hw *jellyfinv1alpha1.HardwareAccel) {
-	if hw == nil {
-		return
-	}
-	jellyfin := &pod.Containers[0]
-	switch hw.Type {
-	case "vaapi", "qsv":
-		dev := hw.DevicePath
-		if dev == "" {
-			dev = "/dev/dri/renderD128"
-		}
-		pod.Volumes = append(pod.Volumes, corev1.Volume{
-			Name: "dri-device",
-			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{Path: dev, Type: ptr.To(corev1.HostPathCharDev)},
-			},
-		})
-		jellyfin.VolumeMounts = append(jellyfin.VolumeMounts, corev1.VolumeMount{Name: "dri-device", MountPath: dev})
-		if hw.RenderGroupGID != nil {
-			if pod.SecurityContext == nil {
-				pod.SecurityContext = &corev1.PodSecurityContext{}
-			}
-			pod.SecurityContext.SupplementalGroups = append(pod.SecurityContext.SupplementalGroups, *hw.RenderGroupGID)
-		}
-	case "nvidia":
-		if jellyfin.Resources.Limits == nil {
-			jellyfin.Resources.Limits = corev1.ResourceList{}
-		}
-		jellyfin.Resources.Limits["nvidia.com/gpu"] = resourceQuantityOne()
-		if hw.RuntimeClassName != "" {
-			pod.RuntimeClassName = ptr.To(hw.RuntimeClassName)
-		}
-	}
 }

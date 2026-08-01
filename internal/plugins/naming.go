@@ -49,6 +49,10 @@ const (
 	PluginLabel = "jellyfin.jellyops.io/plugin"
 
 	JellyfinContainerName = "jellyfin"
+	// WebComponentName names the web tier: its container and component label.
+	WebComponentName = "web"
+	// PortNameHTTP is the named HTTP port on built containers and services.
+	PortNameHTTP = "http"
 
 	ConfigVolumeName = "config"
 	CacheVolumeName  = "cache"

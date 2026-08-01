@@ -40,6 +40,10 @@ type Client struct {
 	version    string
 }
 
+// OperatorClientName identifies the operator to Jellyfin (client name of the
+// MediaBrowser auth identity and of the bootstrap API key).
+const OperatorClientName = "JellyOps"
+
 // New builds a Client for baseURL (e.g. http://jf.media.svc:8096). deviceID
 // should be stable per instance so Jellyfin treats the operator as one client.
 func New(baseURL, deviceID string, hc *http.Client) (*Client, error) {
@@ -53,7 +57,7 @@ func New(baseURL, deviceID string, hc *http.Client) (*Client, error) {
 	return &Client{
 		base:       u,
 		hc:         hc,
-		clientName: "JellyOps",
+		clientName: OperatorClientName,
 		device:     "operator",
 		deviceID:   deviceID,
 		version:    "0.1.0",
