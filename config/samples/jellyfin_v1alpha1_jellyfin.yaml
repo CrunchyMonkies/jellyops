@@ -61,11 +61,10 @@ spec:
       secretName: jellyfin-tls
   hardwareAcceleration:
     type: vaapi
-    # Prefer deviceResource (device plugin) over devicePath (hostPath): a hostPath
-    # is disallowed under the "baseline"/"restricted" Pod Security Standards. The
-    # plugin injects the render device and schedules the pod onto a GPU node.
-    deviceResource: gpu.intel.com/xe   # or gpu.intel.com/i915; omit to use devicePath
-    # devicePath: /dev/dri/renderD128  # legacy hostPath fallback (unset deviceResource)
+    # Prefer a device-plugin resource; without it /dev/dri is hostPath-mounted.
+    # The render device is auto-detected at startup either way; set devicePath
+    # only to pin a specific node.
+    deviceResource: gpu.intel.com/xe
     renderGroupGID: 44
   pluginSelector:
     matchLabels:
