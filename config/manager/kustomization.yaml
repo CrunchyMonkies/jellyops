@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: ghcr.io/crunchymonkies/jellyops
-  newTag: 0.5.2
+  newTag: 0.6.0
