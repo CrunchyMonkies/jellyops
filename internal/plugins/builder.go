@@ -108,6 +108,25 @@ func BuildPodTemplateSpec(jf *jellyfinv1alpha1.Jellyfin, plugins []jellyfinv1alp
 		jellyfin.Env = append(jellyfin.Env, corev1.EnvVar{Name: "JELLYFIN_CACHE_DIR", Value: cachePath})
 	}
 
+	// Trickplay PVC (optional). Jellyfin has no trickplay path setting, so this
+	// mounts at the hardcoded <data>/trickplay -- nested inside the config mount.
+	// The nesting is safe because the config mount is VolumeMounts[0] and the
+	// runtime applies mounts in order, so the parent is established first. No env
+	// var to set: unlike the cache dir, the path is not configurable.
+	if jf.Spec.Storage.Trickplay != nil {
+		trickplayPath := TrickplayMountPath
+		if jf.Spec.Storage.Trickplay.MountPath != "" {
+			trickplayPath = jf.Spec.Storage.Trickplay.MountPath
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: TrickplayVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: TrickplayClaimName(jf)},
+			},
+		})
+		jellyfin.VolumeMounts = append(jellyfin.VolumeMounts, corev1.VolumeMount{Name: TrickplayVolumeName, MountPath: trickplayPath})
+	}
+
 	// Media folders.
 	for _, mf := range jf.Spec.Storage.Media {
 		vol, mount := mediaVolumeAndMount(jf, mf)

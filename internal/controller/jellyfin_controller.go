@@ -105,8 +105,8 @@ func (r *JellyfinReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{}, nil
 }
 
-// reconcileStorage provisions the config/cache PVCs and any PVC/PV-backed media
-// folders. Folders referencing an existing claim or inline NFS are skipped.
+// reconcileStorage provisions the config/cache/trickplay PVCs and any PVC/PV-backed
+// media folders. Folders referencing an existing claim or inline NFS are skipped.
 func (r *JellyfinReconciler) reconcileStorage(ctx context.Context, jf *jellyfinv1alpha1.Jellyfin) error {
 	// Config PVC.
 	if jf.Spec.Storage.Config.ExistingClaim == "" {
@@ -119,6 +119,13 @@ func (r *JellyfinReconciler) reconcileStorage(ctx context.Context, jf *jellyfinv
 	if c := jf.Spec.Storage.Cache; c != nil && c.ExistingClaim == "" {
 		if err := r.ensurePVC(ctx, jf, plugins.CacheClaimName(jf), *c,
 			[]corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, "5Gi"); err != nil {
+			return err
+		}
+	}
+	// Trickplay PVC.
+	if t := jf.Spec.Storage.Trickplay; t != nil && t.ExistingClaim == "" {
+		if err := r.ensurePVC(ctx, jf, plugins.TrickplayClaimName(jf), *t,
+			[]corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, "20Gi"); err != nil {
 			return err
 		}
 	}
@@ -157,7 +164,7 @@ func (r *JellyfinReconciler) ensurePVC(ctx context.Context, jf *jellyfinv1alpha1
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, pvc, func() error {
 		pvc.Labels = plugins.InstanceLabels(jf)
 		if pvc.CreationTimestamp.IsZero() {
-			// PVC spec is immutable after creation; only set on create.
+			// Everything except capacity is immutable after creation.
 			pvc.Spec.AccessModes = modes
 			pvc.Spec.Resources = corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: size}}
 			if spec.StorageClassName != "" {
@@ -166,7 +173,53 @@ func (r *JellyfinReconciler) ensurePVC(ctx context.Context, jf *jellyfinv1alpha1
 		}
 		return controllerutil.SetControllerReference(jf, pvc, r.Scheme)
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return r.growPVC(ctx, pvc, size)
+}
+
+// growPVC propagates an increased size from the CR to an existing claim, so a
+// size bump is not silently ignored -- the divergence is easy to miss until the
+// volume fills up and Jellyfin refuses to start.
+//
+// Expansion is attempted separately from the CreateOrUpdate above because the API
+// rejects it in several legitimate situations: shrinking, an unbound claim, a
+// statically provisioned volume, or a storage class without allowVolumeExpansion.
+// Those rejections are reported and left alone rather than returned as errors, so
+// an unexpandable volume cannot wedge the rest of the reconcile in a retry loop.
+func (r *JellyfinReconciler) growPVC(ctx context.Context, pvc *corev1.PersistentVolumeClaim, size resource.Quantity) error {
+	log := logf.FromContext(ctx)
+
+	cur, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	switch {
+	case ok && size.Cmp(cur) == 0:
+		return nil
+	case ok && size.Cmp(cur) < 0:
+		log.Info("ignoring PVC size decrease; volumes cannot shrink",
+			"pvc", pvc.Name, "current", cur.String(), "requested", size.String())
+		return nil
+	case pvc.Status.Phase != corev1.ClaimBound:
+		log.Info("deferring PVC expansion until the claim is bound",
+			"pvc", pvc.Name, "phase", pvc.Status.Phase)
+		return nil
+	}
+
+	patched := pvc.DeepCopy()
+	if patched.Spec.Resources.Requests == nil {
+		patched.Spec.Resources.Requests = corev1.ResourceList{}
+	}
+	patched.Spec.Resources.Requests[corev1.ResourceStorage] = size
+	if err := r.Client.Patch(ctx, patched, client.MergeFrom(pvc)); err != nil {
+		if apierrors.IsForbidden(err) || apierrors.IsInvalid(err) {
+			log.Error(err, "PVC expansion rejected; the storage class may not allow volume expansion",
+				"pvc", pvc.Name, "current", cur.String(), "requested", size.String())
+			return nil
+		}
+		return err
+	}
+	log.Info("expanded PVC", "pvc", pvc.Name, "from", cur.String(), "to", size.String())
+	return nil
 }
 
 // ensureProvisionedNFS creates a statically-bound RWX PV backed by the NFS export

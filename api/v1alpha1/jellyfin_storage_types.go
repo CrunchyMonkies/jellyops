@@ -33,6 +33,17 @@ type JellyfinStorage struct {
 	// +optional
 	Cache *PVCSpec `json:"cache,omitempty"`
 
+	// Trickplay is an optional PVC for Jellyfin's trickplay (scrubbing preview)
+	// images. Jellyfin hardcodes the trickplay directory to <data>/trickplay with
+	// no server-side path setting, so without this the images accumulate on the
+	// config PVC and can fill it -- Jellyfin refuses to start when /config/data has
+	// under 2GiB free. This mounts a dedicated volume at that path, nested inside
+	// the config mount, so trickplay growth is isolated from config. The
+	// alternative, the SaveTrickplayWithMedia library option, instead requires the
+	// media folders to be mounted writable.
+	// +optional
+	Trickplay *PVCSpec `json:"trickplay,omitempty"`
+
 	// Media is the set of library folders mounted into the Jellyfin pod. A folder
 	// with a library block is also registered as a Jellyfin library via the API.
 	// +listType=map

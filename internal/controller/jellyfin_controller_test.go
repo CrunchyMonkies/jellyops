@@ -23,6 +23,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -81,6 +83,111 @@ var _ = Describe("JellyfinReconciler", func() {
 		var ing networkingv1.Ingress
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "home-media", Namespace: ns}, &ing)).To(Succeed())
 		Expect(ing.Spec.Rules[0].Host).To(Equal("jf.example.com"))
+	})
+
+	It("grows the config PVC when spec size increases, and never shrinks it", func() {
+		sc := &storagev1.StorageClass{
+			ObjectMeta:           metav1.ObjectMeta{Name: "expandable-" + ns},
+			Provisioner:          "example.com/mock",
+			AllowVolumeExpansion: ptr.To(true),
+		}
+		Expect(k8sClient.Create(ctx, sc)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, sc)).To(Succeed()) })
+
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "grow", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{Storage: jellyfinv1alpha1.JellyfinStorage{
+				Config: jellyfinv1alpha1.PVCSpec{Size: resource.MustParse("10Gi"), StorageClassName: sc.Name},
+			}},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("grow")
+
+		key := types.NamespacedName{Name: "grow-config", Namespace: ns}
+		var pvc corev1.PersistentVolumeClaim
+		Expect(k8sClient.Get(ctx, key, &pvc)).To(Succeed())
+		Expect(pvc.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("10Gi")))
+
+		// The API only resizes bound claims; envtest has no provisioner, so drive
+		// the phase directly.
+		pvc.Status.Phase = corev1.ClaimBound
+		Expect(k8sClient.Status().Update(ctx, &pvc)).To(Succeed())
+
+		// Growing: a size bump in the CR must reach the PVC. Silently ignoring it
+		// lets the volume fill up and take Jellyfin down.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "grow", Namespace: ns}, jf)).To(Succeed())
+		jf.Spec.Storage.Config.Size = resource.MustParse("40Gi")
+		Expect(k8sClient.Update(ctx, jf)).To(Succeed())
+		reconcileInstance("grow")
+
+		Expect(k8sClient.Get(ctx, key, &pvc)).To(Succeed())
+		Expect(pvc.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("40Gi")))
+
+		// Shrinking: volumes cannot shrink, so the request is ignored rather than
+		// sent to the API, where it would fail every reconcile.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "grow", Namespace: ns}, jf)).To(Succeed())
+		jf.Spec.Storage.Config.Size = resource.MustParse("5Gi")
+		Expect(k8sClient.Update(ctx, jf)).To(Succeed())
+		reconcileInstance("grow")
+
+		Expect(k8sClient.Get(ctx, key, &pvc)).To(Succeed())
+		Expect(pvc.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("40Gi")))
+	})
+
+	It("keeps reconciling when the storage class forbids expansion", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "noexpand", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{Storage: jellyfinv1alpha1.JellyfinStorage{
+				Config: jellyfinv1alpha1.PVCSpec{Size: resource.MustParse("10Gi")},
+			}},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("noexpand")
+
+		key := types.NamespacedName{Name: "noexpand-config", Namespace: ns}
+		var pvc corev1.PersistentVolumeClaim
+		Expect(k8sClient.Get(ctx, key, &pvc)).To(Succeed())
+		pvc.Status.Phase = corev1.ClaimBound
+		Expect(k8sClient.Status().Update(ctx, &pvc)).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "noexpand", Namespace: ns}, jf)).To(Succeed())
+		jf.Spec.Storage.Config.Size = resource.MustParse("40Gi")
+		Expect(k8sClient.Update(ctx, jf)).To(Succeed())
+
+		// No storage class, so the API forbids expansion. Reconcile must still
+		// succeed rather than retrying a permanently failing update forever.
+		reconcileInstance("noexpand")
+
+		Expect(k8sClient.Get(ctx, key, &pvc)).To(Succeed())
+		Expect(pvc.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("10Gi")))
+	})
+
+	It("provisions a trickplay PVC mounted at the hardcoded data path", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "tp", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{Storage: jellyfinv1alpha1.JellyfinStorage{
+				Config:    jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"},
+				Trickplay: &jellyfinv1alpha1.PVCSpec{Size: resource.MustParse("50Gi")},
+			}},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("tp")
+
+		var pvc corev1.PersistentVolumeClaim
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tp-trickplay", Namespace: ns}, &pvc)).To(Succeed())
+		Expect(pvc.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("50Gi")))
+
+		var dep appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tp", Namespace: ns}, &dep)).To(Succeed())
+		var mounts []corev1.VolumeMount
+		for _, c := range dep.Spec.Template.Spec.Containers {
+			if c.Name == "jellyfin" {
+				mounts = c.VolumeMounts
+			}
+		}
+		Expect(mounts).To(ContainElement(corev1.VolumeMount{
+			Name: "trickplay", MountPath: "/config/data/trickplay",
+		}))
 	})
 
 	It("provisions a PV+PVC for provisioned NFS media", func() {

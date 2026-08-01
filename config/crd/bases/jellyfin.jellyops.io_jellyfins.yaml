@@ -805,6 +805,46 @@ spec:
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
+                  trickplay:
+                    description: |-
+                      Trickplay is an optional PVC for Jellyfin's trickplay (scrubbing preview)
+                      images. Jellyfin hardcodes the trickplay directory to <data>/trickplay with
+                      no server-side path setting, so without this the images accumulate on the
+                      config PVC and can fill it -- Jellyfin refuses to start when /config/data has
+                      under 2GiB free. This mounts a dedicated volume at that path, nested inside
+                      the config mount, so trickplay growth is isolated from config. The
+                      alternative, the SaveTrickplayWithMedia library option, instead requires the
+                      media folders to be mounted writable.
+                    properties:
+                      accessModes:
+                        description: |-
+                          AccessModes for a provisioned PVC. Defaults to ReadWriteOnce for config and
+                          ReadWriteMany for shared media.
+                        items:
+                          type: string
+                        type: array
+                      existingClaim:
+                        description: |-
+                          ExistingClaim references an already-provisioned PVC by name. When set, Size
+                          and StorageClassName are ignored and the operator creates nothing.
+                        type: string
+                      mountPath:
+                        description: MountPath overrides the default mount path inside
+                          the pod.
+                        type: string
+                      size:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: Size is the requested capacity when the operator
+                          provisions the PVC.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      storageClassName:
+                        description: StorageClassName selects the storage class for
+                          a provisioned PVC.
+                        type: string
+                    type: object
                 type: object
               transcoding:
                 description: |-

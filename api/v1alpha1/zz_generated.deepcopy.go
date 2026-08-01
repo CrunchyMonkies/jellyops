@@ -674,6 +674,11 @@ func (in *JellyfinStorage) DeepCopyInto(out *JellyfinStorage) {
 		*out = new(PVCSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Trickplay != nil {
+		in, out := &in.Trickplay, &out.Trickplay
+		*out = new(PVCSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Media != nil {
 		in, out := &in.Media, &out.Media
 		*out = make([]MediaFolder, len(*in))
