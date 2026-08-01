@@ -50,11 +50,16 @@ const (
 
 	JellyfinContainerName = "jellyfin"
 
-	ConfigVolumeName = "config"
-	CacheVolumeName  = "cache"
+	ConfigVolumeName    = "config"
+	CacheVolumeName     = "cache"
+	TrickplayVolumeName = "trickplay"
 
 	ConfigMountPath = "/config"
 	CacheMountPath  = "/cache"
+	// TrickplayMountPath is where Jellyfin writes trickplay images. The path is
+	// hardcoded server-side as <data>/trickplay (data being ConfigMountPath+/data)
+	// with no configuration setting, so this constant must track it.
+	TrickplayMountPath = "/config/data/trickplay"
 	// PluginsDirPath is where Jellyfin discovers plugins.
 	PluginsDirPath = "/config/plugins"
 	// InstalledMarkerDir holds runOnce markers keyed by plugin folder name.
@@ -187,6 +192,14 @@ func CacheClaimName(jf *jellyfinv1alpha1.Jellyfin) string {
 		return jf.Spec.Storage.Cache.ExistingClaim
 	}
 	return truncateName(jf.Name + "-cache")
+}
+
+// TrickplayClaimName is the PVC name backing the trickplay volume.
+func TrickplayClaimName(jf *jellyfinv1alpha1.Jellyfin) string {
+	if jf.Spec.Storage.Trickplay != nil && jf.Spec.Storage.Trickplay.ExistingClaim != "" {
+		return jf.Spec.Storage.Trickplay.ExistingClaim
+	}
+	return truncateName(jf.Name + "-trickplay")
 }
 
 // MediaClaimName is the PVC name backing a PVC/provisioned-NFS media folder.

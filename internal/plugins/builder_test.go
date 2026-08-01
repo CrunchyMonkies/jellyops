@@ -347,6 +347,99 @@ func TestMediaProvisionedNFSUsesPVC(t *testing.T) {
 	}
 }
 
+func jellyfinContainer(t *testing.T, pod corev1.PodTemplateSpec) *corev1.Container {
+	t.Helper()
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == JellyfinContainerName {
+			return &pod.Spec.Containers[i]
+		}
+	}
+	t.Fatal("jellyfin container not found")
+	return nil
+}
+
+func TestTrickplayAbsentByDefault(t *testing.T) {
+	pod, _ := BuildPodTemplateSpec(baseInstance(), nil)
+	if v := findVolume(pod.Spec.Volumes, TrickplayVolumeName); v != nil {
+		t.Error("trickplay volume should not be created unless storage.trickplay is set")
+	}
+}
+
+func TestTrickplayPVCMountedAtDataPath(t *testing.T) {
+	jf := baseInstance()
+	jf.Spec.Storage.Trickplay = &jellyfinv1alpha1.PVCSpec{StorageClassName: "nfs-client"}
+	pod, _ := BuildPodTemplateSpec(jf, nil)
+
+	v := findVolume(pod.Spec.Volumes, TrickplayVolumeName)
+	if v == nil || v.PersistentVolumeClaim == nil {
+		t.Fatal("expected PVC-backed trickplay volume")
+	}
+	if v.PersistentVolumeClaim.ClaimName != "home-media-trickplay" {
+		t.Errorf("claim name = %q", v.PersistentVolumeClaim.ClaimName)
+	}
+
+	c := jellyfinContainer(t, pod)
+	var mount *corev1.VolumeMount
+	for i := range c.VolumeMounts {
+		if c.VolumeMounts[i].Name == TrickplayVolumeName {
+			mount = &c.VolumeMounts[i]
+		}
+	}
+	if mount == nil {
+		t.Fatal("trickplay volume not mounted into the jellyfin container")
+	}
+	// Jellyfin hardcodes this path; it is not configurable server-side.
+	if mount.MountPath != "/config/data/trickplay" {
+		t.Errorf("mount path = %q, want /config/data/trickplay", mount.MountPath)
+	}
+}
+
+// The trickplay mount nests inside the config mount, which only works if the
+// runtime establishes /config first. Mounts are applied in slice order, so
+// config must appear before trickplay.
+func TestTrickplayMountOrderedAfterConfig(t *testing.T) {
+	jf := baseInstance()
+	jf.Spec.Storage.Trickplay = &jellyfinv1alpha1.PVCSpec{StorageClassName: "nfs-client"}
+	pod, _ := BuildPodTemplateSpec(jf, nil)
+
+	c := jellyfinContainer(t, pod)
+	configIdx, trickplayIdx := -1, -1
+	for i, m := range c.VolumeMounts {
+		switch m.Name {
+		case ConfigVolumeName:
+			configIdx = i
+		case TrickplayVolumeName:
+			trickplayIdx = i
+		}
+	}
+	if configIdx == -1 || trickplayIdx == -1 {
+		t.Fatalf("missing mounts: config=%d trickplay=%d", configIdx, trickplayIdx)
+	}
+	if configIdx > trickplayIdx {
+		t.Errorf("config mount (%d) must precede nested trickplay mount (%d)", configIdx, trickplayIdx)
+	}
+}
+
+func TestTrickplayExistingClaimAndMountPathOverride(t *testing.T) {
+	jf := baseInstance()
+	jf.Spec.Storage.Trickplay = &jellyfinv1alpha1.PVCSpec{
+		ExistingClaim: "my-trickplay",
+		MountPath:     "/config/data/trickplay-alt",
+	}
+	pod, _ := BuildPodTemplateSpec(jf, nil)
+
+	v := findVolume(pod.Spec.Volumes, TrickplayVolumeName)
+	if v == nil || v.PersistentVolumeClaim.ClaimName != "my-trickplay" {
+		t.Fatalf("expected existing claim to be used, got %+v", v)
+	}
+	c := jellyfinContainer(t, pod)
+	for _, m := range c.VolumeMounts {
+		if m.Name == TrickplayVolumeName && m.MountPath != "/config/data/trickplay-alt" {
+			t.Errorf("mount path override ignored: %q", m.MountPath)
+		}
+	}
+}
+
 func TestMediaMountOptionsForcePVC(t *testing.T) {
 	jf := baseInstance()
 	jf.Spec.Storage.Media = []jellyfinv1alpha1.MediaFolder{{
