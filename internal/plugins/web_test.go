@@ -111,7 +111,7 @@ func TestBuildWebDeployment(t *testing.T) {
 	}
 
 	// Pod annotations.
-	ann := dep.Spec.Template.ObjectMeta.Annotations
+	ann := dep.Spec.Template.Annotations
 	if ann["prometheus.io/scrape"] != "true" {
 		t.Errorf("pod annotation missing: %v", ann)
 	}

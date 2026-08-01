@@ -18,7 +18,8 @@ package controller
 
 import (
 	"context"
-	"sort"
+	"slices"
+	"strings"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,7 +64,7 @@ func BoundPlugins(ctx context.Context, c client.Client, jf *jellyfinv1alpha1.Jel
 			bound = append(bound, list.Items[i])
 		}
 	}
-	sort.Slice(bound, func(i, j int) bool { return bound[i].Name < bound[j].Name })
+	slices.SortFunc(bound, func(a, b jellyfinv1alpha1.JellyfinPlugin) int { return strings.Compare(a.Name, b.Name) })
 	return bound, nil
 }
 
