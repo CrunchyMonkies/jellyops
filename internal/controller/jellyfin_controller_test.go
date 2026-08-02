@@ -46,9 +46,13 @@ var _ = Describe("JellyfinReconciler", func() {
 		ns = newNamespace()
 	})
 
-	reconcileInstance := func(name string) {
+	reconcileInstanceErr := func(name string) error {
 		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: ns}})
-		Expect(err).NotTo(HaveOccurred())
+		return err
+	}
+
+	reconcileInstance := func(name string) {
+		Expect(reconcileInstanceErr(name)).To(Succeed())
 	}
 
 	It("creates the Deployment, Service, config PVC, and Ingress", func() {
@@ -276,6 +280,98 @@ var _ = Describe("JellyfinReconciler", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(Succeed())
 		Expect(pv.Spec.ClaimRef.Name).To(Equal("provfix-media-tv"))
 		Expect(pv.Spec.ClaimRef.UID).To(BeEmpty())
+	})
+
+	It("replaces an unbound PV whose immutable NFS source drifted", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "provmove", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{Storage: jellyfinv1alpha1.JellyfinStorage{
+				Config: jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"},
+				Media: []jellyfinv1alpha1.MediaFolder{{
+					Name: "tv", MountPath: "/media/tv",
+					NFS: &jellyfinv1alpha1.NFSSource{Server: "10.0.0.10", Path: "/export/tv", Provision: true},
+				}},
+			}},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("provmove")
+
+		pvName := "provmove-media-tv-pv"
+		var pv corev1.PersistentVolume
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(Succeed())
+		Expect(pv.Spec.NFS.Server).To(Equal("10.0.0.10"))
+		Expect(pv.Spec.ClaimRef.UID).To(BeEmpty(), "envtest has no binder, so this PV is unbound")
+
+		// Repoint the folder at a different server. spec.persistentVolumeSource is
+		// immutable, so the only way through is to replace the volume.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "provmove", Namespace: ns}, jf)).To(Succeed())
+		jf.Spec.Storage.Media[0].NFS.Server = "10.0.0.20"
+		Expect(k8sClient.Update(ctx, jf)).To(Succeed())
+
+		// First pass deletes and requeues rather than issuing an update the API server
+		// would reject with Forbidden.
+		err := reconcileInstanceErr("provmove")
+		Expect(err).To(MatchError(ContainSubstring("replacing PersistentVolume")))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(Succeed())
+		Expect(pv.DeletionTimestamp).NotTo(BeNil(), "the drifted PV should have been deleted")
+
+		// The apiserver's StorageObjectInUseProtection admission plugin stamps a
+		// pv-protection finalizer on every PV, and envtest runs no controller-manager
+		// to take it off again, so the object lingers Terminating. Stand in for that
+		// controller. Meanwhile the operator keeps returning the same error, which is
+		// what we want -- it retries until the volume is actually gone.
+		Expect(reconcileInstanceErr("provmove")).To(MatchError(ContainSubstring("replacing PersistentVolume")))
+		pv.Finalizers = nil
+		Expect(k8sClient.Update(ctx, &pv)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(
+			MatchError(ContainSubstring("not found")))
+
+		// Now it rebuilds against the new source.
+		reconcileInstance("provmove")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(Succeed())
+		Expect(pv.Spec.NFS.Server).To(Equal("10.0.0.20"))
+		Expect(pv.Spec.NFS.Path).To(Equal("/export/tv"))
+		Expect(pv.Spec.ClaimRef.Name).To(Equal("provmove-media-tv"))
+	})
+
+	It("refuses to replace a bound PV and says how to migrate it", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "provbound", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{Storage: jellyfinv1alpha1.JellyfinStorage{
+				Config: jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"},
+				Media: []jellyfinv1alpha1.MediaFolder{{
+					Name: "tv", MountPath: "/media/tv",
+					NFS: &jellyfinv1alpha1.NFSSource{Server: "10.0.0.10", Path: "/export/tv", Provision: true},
+				}},
+			}},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("provbound")
+
+		// Stand in for the binder, which envtest does not run: stamp the claim's UID
+		// into ClaimRef and mark the volume Bound.
+		pvName := "provbound-media-tv-pv"
+		var pvc corev1.PersistentVolumeClaim
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "provbound-media-tv", Namespace: ns}, &pvc)).To(Succeed())
+		var pv corev1.PersistentVolume
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(Succeed())
+		pv.Spec.ClaimRef.UID = pvc.UID
+		Expect(k8sClient.Update(ctx, &pv)).To(Succeed())
+		pv.Status.Phase = corev1.VolumeBound
+		Expect(k8sClient.Status().Update(ctx, &pv)).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "provbound", Namespace: ns}, jf)).To(Succeed())
+		jf.Spec.Storage.Media[0].NFS.Path = "/export/tv2"
+		Expect(k8sClient.Update(ctx, jf)).To(Succeed())
+
+		err := reconcileInstanceErr("provbound")
+		Expect(err).To(MatchError(ContainSubstring("immutable after creation")))
+		Expect(err).To(MatchError(ContainSubstring("provision=false")), "the error has to name the way out")
+
+		// The bound volume, and the pods mounting it, are left alone.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(Succeed())
+		Expect(pv.Spec.NFS.Path).To(Equal("/export/tv"))
+		Expect(pv.Spec.ClaimRef.UID).To(Equal(pvc.UID))
 	})
 
 	It("creates web Deployment and Service when spec.web is set", func() {

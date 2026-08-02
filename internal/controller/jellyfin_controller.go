@@ -232,6 +232,41 @@ func (r *JellyfinReconciler) ensureProvisionedNFS(ctx context.Context, jf *jelly
 	capacity := resource.MustParse("1Ti") // NFS ignores capacity; required by the API.
 	scName := mf.NFS.StorageClassName
 
+	// A PV's spec.persistentVolumeSource and spec.storageClassName are immutable once
+	// the object exists, so an edited nfs.server/path/readOnly can never be applied in
+	// place -- the API server rejects the update, and because that error aborts the
+	// whole reconcile the instance stops converging entirely (deployments, libraries and
+	// all) until someone intervenes. Deal with it here instead of letting it hot-loop.
+	desiredNFS := &corev1.NFSVolumeSource{Server: mf.NFS.Server, Path: mf.NFS.Path, ReadOnly: mf.NFS.ReadOnly}
+	existing := &corev1.PersistentVolume{}
+	switch err := r.Get(ctx, types.NamespacedName{Name: pvName}, existing); {
+	case apierrors.IsNotFound(err):
+		// Nothing to reconcile against; the CreateOrUpdate below makes it.
+	case err != nil:
+		return err
+	default:
+		if drift := immutablePVDrift(existing, desiredNFS, scName); drift != "" {
+			// Deleting a PV that a claim is still bound to strands every pod mounting it,
+			// so that migration has to be sequenced by a human. Say exactly how.
+			if pvIsServingAClaim(existing) {
+				return fmt.Errorf("PersistentVolume %q has %s; that field is immutable after creation and the volume is still bound to %s/%s. "+
+					"To migrate: set storage.media[%s].nfs.provision=false and apply (pods fall back to an inline NFS volume source and release the claim), "+
+					"delete PVC %s/%s and PV %s, then set provision=true again",
+					pvName, drift, existing.Spec.ClaimRef.Namespace, existing.Spec.ClaimRef.Name,
+					mf.Name, jf.Namespace, claim, pvName)
+			}
+			// Nothing is bound to it -- typically a leftover from a previous spec or an
+			// aborted attempt -- so it is safe to replace outright.
+			logf.FromContext(ctx).Info("replacing PersistentVolume, immutable field changed", "pv", pvName, "drift", drift)
+			if err := r.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+			// Recreating in this pass would race the delete and hit AlreadyExists on a
+			// still-terminating object; requeue and build it fresh on the next one.
+			return fmt.Errorf("replacing PersistentVolume %q (%s), retrying", pvName, drift)
+		}
+	}
+
 	pv := &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: pvName}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, pv, func() error {
 		pv.Labels = plugins.InstanceLabels(jf)
@@ -240,7 +275,7 @@ func (r *JellyfinReconciler) ensureProvisionedNFS(ctx context.Context, jf *jelly
 		pv.Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimDelete
 		pv.Spec.MountOptions = mf.NFS.MountOptions
 		pv.Spec.StorageClassName = scName
-		pv.Spec.NFS = &corev1.NFSVolumeSource{Server: mf.NFS.Server, Path: mf.NFS.Path, ReadOnly: mf.NFS.ReadOnly}
+		pv.Spec.NFS = desiredNFS
 		// Pre-bind the PV to its claim, but only when it is unset or points somewhere
 		// else. The binder stamps UID (and ResourceVersion) into ClaimRef when it binds;
 		// rewriting the whole reference on every reconcile wipes them, which the binder
@@ -270,6 +305,37 @@ func (r *JellyfinReconciler) ensureProvisionedNFS(ctx context.Context, jf *jelly
 		return controllerutil.SetControllerReference(jf, pvc, r.Scheme)
 	})
 	return err
+}
+
+// immutablePVDrift names the immutable field on which an existing PV no longer matches
+// the spec, or "" when it can be reconciled in place. Both spec.persistentVolumeSource
+// and spec.storageClassName are rejected by the API server once the object exists.
+// The result is user-facing, so it reads as "has <drift>".
+func immutablePVDrift(pv *corev1.PersistentVolume, want *corev1.NFSVolumeSource, storageClass string) string {
+	switch got := pv.Spec.NFS; {
+	case got == nil:
+		return "a non-NFS volume source"
+	case got.Server != want.Server:
+		return fmt.Sprintf("nfs.server %q, but the spec asks for %q", got.Server, want.Server)
+	case got.Path != want.Path:
+		return fmt.Sprintf("nfs.path %q, but the spec asks for %q", got.Path, want.Path)
+	case got.ReadOnly != want.ReadOnly:
+		return fmt.Sprintf("nfs.readOnly=%t, but the spec asks for %t", got.ReadOnly, want.ReadOnly)
+	case pv.Spec.StorageClassName != storageClass:
+		return fmt.Sprintf("storageClassName %q, but the spec asks for %q", pv.Spec.StorageClassName, storageClass)
+	}
+	return ""
+}
+
+// pvIsServingAClaim reports whether deleting the PV would strand a bound claim. A
+// ClaimRef carrying a UID means the binder has tied it to a live PVC; the UID-less
+// ClaimRef this controller writes to pre-bind a fresh volume does not count, and
+// Released/Failed volumes have already lost their claim.
+func pvIsServingAClaim(pv *corev1.PersistentVolume) bool {
+	if pv.Spec.ClaimRef == nil || pv.Spec.ClaimRef.UID == "" {
+		return false
+	}
+	return pv.Status.Phase == corev1.VolumeBound || pv.Status.Phase == corev1.VolumePending
 }
 
 func (r *JellyfinReconciler) reconcileDeployment(ctx context.Context, jf *jellyfinv1alpha1.Jellyfin, healthy []jellyfinv1alpha1.JellyfinPlugin) error {
