@@ -215,6 +215,69 @@ var _ = Describe("JellyfinReconciler", func() {
 		Expect(pv.Spec.MountOptions).To(ContainElement("nfsvers=4.1"))
 	})
 
+	It("preserves a bound PV's ClaimRef UID across reconciles", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "provuid", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{Storage: jellyfinv1alpha1.JellyfinStorage{
+				Config: jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"},
+				Media: []jellyfinv1alpha1.MediaFolder{{
+					Name: "tv", MountPath: "/media/tv",
+					NFS: &jellyfinv1alpha1.NFSSource{Server: "10.0.0.10", Path: "/export/tv", Provision: true},
+				}},
+			}},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("provuid")
+
+		pvName := "provuid-media-tv-pv"
+		var pv corev1.PersistentVolume
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(Succeed())
+		Expect(pv.Spec.ClaimRef).NotTo(BeNil())
+		Expect(pv.Spec.ClaimRef.UID).To(BeEmpty(), "freshly created PV should be pre-bound by name only")
+
+		// Stand in for the PV binder, which stamps the claim's UID into ClaimRef once
+		// it binds. Reconciling again must not clobber it -- doing so flips the PVC to
+		// Lost and strands every pod that mounts it.
+		var pvc corev1.PersistentVolumeClaim
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "provuid-media-tv", Namespace: ns}, &pvc)).To(Succeed())
+		pv.Spec.ClaimRef.UID = pvc.UID
+		Expect(k8sClient.Update(ctx, &pv)).To(Succeed())
+
+		reconcileInstance("provuid")
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(Succeed())
+		Expect(pv.Spec.ClaimRef).NotTo(BeNil())
+		Expect(pv.Spec.ClaimRef.UID).To(Equal(pvc.UID), "reconcile wiped the binder-stamped ClaimRef UID")
+		Expect(pv.Spec.ClaimRef.Name).To(Equal("provuid-media-tv"))
+	})
+
+	It("repoints a PV's ClaimRef when it names the wrong claim", func() {
+		jf := &jellyfinv1alpha1.Jellyfin{
+			ObjectMeta: metav1.ObjectMeta{Name: "provfix", Namespace: ns},
+			Spec: jellyfinv1alpha1.JellyfinSpec{Storage: jellyfinv1alpha1.JellyfinStorage{
+				Config: jellyfinv1alpha1.PVCSpec{ExistingClaim: "cfg"},
+				Media: []jellyfinv1alpha1.MediaFolder{{
+					Name: "tv", MountPath: "/media/tv",
+					NFS: &jellyfinv1alpha1.NFSSource{Server: "10.0.0.10", Path: "/export/tv", Provision: true},
+				}},
+			}},
+		}
+		Expect(k8sClient.Create(ctx, jf)).To(Succeed())
+		reconcileInstance("provfix")
+
+		pvName := "provfix-media-tv-pv"
+		var pv corev1.PersistentVolume
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(Succeed())
+		pv.Spec.ClaimRef = &corev1.ObjectReference{Namespace: ns, Name: "someone-elses-claim", UID: "stale"}
+		Expect(k8sClient.Update(ctx, &pv)).To(Succeed())
+
+		reconcileInstance("provfix")
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, &pv)).To(Succeed())
+		Expect(pv.Spec.ClaimRef.Name).To(Equal("provfix-media-tv"))
+		Expect(pv.Spec.ClaimRef.UID).To(BeEmpty())
+	})
+
 	It("creates web Deployment and Service when spec.web is set", func() {
 		jf := &jellyfinv1alpha1.Jellyfin{
 			ObjectMeta: metav1.ObjectMeta{Name: "web-test", Namespace: ns},

@@ -241,7 +241,18 @@ func (r *JellyfinReconciler) ensureProvisionedNFS(ctx context.Context, jf *jelly
 		pv.Spec.MountOptions = mf.NFS.MountOptions
 		pv.Spec.StorageClassName = scName
 		pv.Spec.NFS = &corev1.NFSVolumeSource{Server: mf.NFS.Server, Path: mf.NFS.Path, ReadOnly: mf.NFS.ReadOnly}
-		pv.Spec.ClaimRef = &corev1.ObjectReference{Namespace: jf.Namespace, Name: claim}
+		// Pre-bind the PV to its claim, but only when it is unset or points somewhere
+		// else. The binder stamps UID (and ResourceVersion) into ClaimRef when it binds;
+		// rewriting the whole reference on every reconcile wipes them, which the binder
+		// reads as "bound to a claim that no longer exists" -- the PVC flips to Lost and
+		// every pod using it is stuck Pending with "bound to non-existent
+		// persistentvolume". Compare on namespace/name only so an existing binding is
+		// preserved while a stale one still gets corrected.
+		if pv.Spec.ClaimRef == nil ||
+			pv.Spec.ClaimRef.Namespace != jf.Namespace ||
+			pv.Spec.ClaimRef.Name != claim {
+			pv.Spec.ClaimRef = &corev1.ObjectReference{Namespace: jf.Namespace, Name: claim}
+		}
 		return nil
 	}); err != nil {
 		return err
