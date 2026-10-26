@@ -64,7 +64,7 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 	}
 
 	serverSvcName := gatewayv1.ObjectName(jf.Name)
-	serverPort := gatewayv1.PortNumber(DefaultJellyfinPort)
+	serverPort := DefaultJellyfinPort // gatewayv1.PortNumber is an int32 alias
 
 	defaultPrefix := gatewayv1.PathMatchPathPrefix
 	rootExact := gatewayv1.PathMatchExact
@@ -128,7 +128,7 @@ func BuildHTTPRoute(jf *jellyfinv1alpha1.Jellyfin) *gatewayv1.HTTPRoute {
 		// Route /web to it, with carve-outs so the plugin-configuration API
 		// endpoints that happen to live under /web still reach the server.
 		webSvcName := gatewayv1.ObjectName(WebServiceName(jf))
-		webPort := gatewayv1.PortNumber(DefaultWebPort)
+		webPort := DefaultWebPort
 		webPrefix := gatewayv1.PathMatchPathPrefix
 		headerExact := gatewayv1.HeaderMatchExact
 
