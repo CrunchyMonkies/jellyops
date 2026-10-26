@@ -274,7 +274,7 @@ metadata:
   name: home-media
   namespace: media
 spec:
-  image: ghcr.io/example/jellyfin:12.0.0-net10   # jellycode requires a v12/.NET 10 server; stock Jellyfin is the operator default — override only for ABI-incompatible plugins (see §4.4)
+  image: ghcr.io/crunchymonkies/jellyfin:v12.3-jc-0.2.4@sha256:7987029edd1f264cf86b16148a004fe07d038ba92e9459c2685bf3f61c3d08c0   # Jellyfin 12.3 + the EncodingHelper patch jellycode needs; stock Jellyfin is the operator default — override only when a plugin needs a specific server build (see §4.4)
   replicas: 1
   storage:
     config: { size: 5Gi, accessModes: [ReadWriteOnce] }
@@ -502,7 +502,7 @@ The operator enforces ABI compatibility generically, for **every** plugin, and n
 - **Generic ABI gate.** For each bound plugin, the operator validates `JellyfinPlugin.meta.targetAbi` against the instance's running server version and sets an `ABICompatible` condition. On mismatch it transitions **the plugin** to `Failed` and emits an event — it never silently mounts an unloadable plugin and never blocks or fails the instance itself.
 - **Plugins carry their own base-image prerequisites.** A plugin that needs a non-default server ABI documents that requirement; the user opts in by overriding `spec.image`.
 
-*Example (jellycode prerequisite):* jellycode's `meta.json` declares `targetAbi: 12.0.0.0` and `framework: net10.0`, which stock Jellyfin 10.x is ABI-incompatible with and will refuse to load. A user enabling jellycode must therefore set `spec.image` to a compatible **custom Jellyfin v12 / .NET 10 build**. That is jellycode's prerequisite — documented and shipped with jellycode — not an operator default. Sourcing and maintaining such an image is out of scope for the operator.
+*Example (jellycode prerequisite):* jellycode's `meta.json` declares `targetAbi: 12.0.0.0` and `framework: net10.0`. Jellyfin 12 is a GA release (12.3 at the time of writing), so any 12.x server satisfies that ABI, while 10.x servers are ABI-incompatible and refuse to load it. jellycode also relies on a public HLS argument builder on `EncodingHelper` that upstream does not expose, so a user enabling jellycode sets `spec.image` to the **CrunchyMonkies Jellyfin fork** built on the matching upstream release (e.g. `ghcr.io/crunchymonkies/jellyfin:v12.3-jc-0.2.4`, Jellyfin 12.3 on jellyfin-ffmpeg8). That image is headless (`--nowebclient`), so pair it with `spec.web` pointing at the matching `ghcr.io/crunchymonkies/jellyfin-web` tag. That is jellycode's prerequisite — documented and shipped with jellycode — not an operator default. Sourcing and maintaining such an image is out of scope for the operator.
 
 ### 4.5 NFS media folders
 
@@ -857,10 +857,10 @@ The operator does **not** depend on this proto — it drives only Kubernetes-nat
 
 ## 14. Open Questions / Risks
 
-- **Read-only `meta.json`** — confirm whether the target Jellyfin v12 build tolerates a read-only plugin dir; if so, `imageVolume` can be the default and the copy mitigation becomes optional.
+- **Read-only `meta.json`** — confirm whether the target Jellyfin 12.x server tolerates a read-only plugin dir; if so, `imageVolume` can be the default and the copy mitigation becomes optional.
 - **Runtime support for image volumes** — image volumes require a recent CRI runtime; clusters on older containerd/CRI-O cannot use this mechanism. This is a hard prerequisite that must be checked at install time (the operator should surface a clear precondition error).
 - **jellycode identity path mapping** — Phase 0 assumes server and workers share absolute paths, forcing RWX media and shared output paths. Non-identity mapping is a future `PathMap` feature; until then the operator must enforce/validate matching mount paths.
-- **Plugin base-image prerequisites** — the operator defaults to stock Jellyfin, so no operator default depends on an external build. Plugins that need a non-default ABI (e.g. jellycode's `targetAbi 12.0.0.0` / `net10.0` server) must source and maintain that image themselves; the operator only needs to validate ABI and surface a clear error on mismatch.
+- **Plugin base-image prerequisites** — the operator defaults to stock Jellyfin, so no operator default depends on an external build. Plugins that need a specific server build (e.g. jellycode's `targetAbi 12.0.0.0` / `net10.0` plus the forked `EncodingHelper`) must source and maintain that image themselves; the operator only needs to validate ABI and surface a clear error on mismatch.
 - **gRPC security** — cleartext h2c is acceptable only inside a trusted cluster boundary; production cross-zone/transcoding-at-the-edge needs the Phase 2 mTLS work.
 
 ---
