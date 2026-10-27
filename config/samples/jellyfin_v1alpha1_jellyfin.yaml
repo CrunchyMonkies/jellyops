@@ -6,7 +6,11 @@ metadata:
   labels:
     app.kubernetes.io/name: jellyops
 spec:
-  image: harbor.bne1.ouchi.com.au/applications/jellyfin-server:12.0.0 # plugin-free v12; tag drives ABI gating
+  # CrunchyMonkies Jellyfin 12.3 server (upstream 12.3 + the fork's EncodingHelper patch the
+  # distributed-transcoding plugin needs). The tag drives ABI gating (v12.3-jc-0.2.4 -> 12.3);
+  # the digest pins the exact build. The image is headless (--nowebclient), so spec.web
+  # below supplies the matching web client.
+  image: ghcr.io/crunchymonkies/jellyfin:v12.3-jc-0.2.4@sha256:7987029edd1f264cf86b16148a004fe07d038ba92e9459c2685bf3f61c3d08c0
   replicas: 1
   storage:
     config:
@@ -69,16 +73,14 @@ spec:
   pluginSelector:
     matchLabels:
       jellyfin.jellyops.io/instance: home-media
-  # web: # Uncomment to deploy a separate web-tier (jellyfin-web/nginx)
-  #   image: ghcr.io/crunchymonkies/jellyfin-web:latest
-  #   replicas: 2
-  #   resources:
-  #     requests:
-  #       cpu: 50m
-  #       memory: 64Mi
-  #     limits:
-  #       cpu: 200m
-  #       memory: 128Mi
+  web: # jellyfin-web matching the server version
+    image: ghcr.io/crunchymonkies/jellyfin-web:v12.3-jc-0.2.4@sha256:0ae44037c98ab15907bc2105f27c9613f49611c8765117c8302c7b1f8fea213d
+    # "volume" mounts the web image into the server pod and has the server host /web
+    # (drops --nowebclient), which works behind the single-backend Ingress above.
+    # For a separate nginx web-tier use mode: deployment (default) with replicas/resources;
+    # that needs the gateway block below, since only Gateway routes /web to the web tier.
+    mode: volume
+    subPath: usr/share/nginx/html/web
   # gateway: # Uncomment to use Gateway API instead of Ingress (mutually exclusive)
   #   gatewayRef:
   #     name: main-gateway

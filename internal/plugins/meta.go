@@ -114,7 +114,8 @@ func imageTag(image string) string {
 
 // ServerVersionFromImage derives the Jellyfin server version from an image tag,
 // e.g. "ghcr.io/x/jellyfin:12.0.0-net10" -> "12.0.0" and the standard v-prefixed
-// form "ghcr.io/x/jellyfin:v12.0.0-rc-jc-0.1.0" -> "12.0.0". Returns "" when the
+// form "ghcr.io/x/jellyfin:v12.0.0-rc-jc-0.1.0" -> "12.0.0", including two-component
+// release tags such as "v12.3-jc-0.2.4" -> "12.3". Returns "" when the
 // tag carries no parseable version.
 func ServerVersionFromImage(image string) string {
 	tag := imageTag(image)

@@ -11,6 +11,8 @@ spec:
   pluginImage:
     # Plugin-only image-volume payload (meta.json + DLLs at root). Pin by digest;
     # docker/build-push.sh in the jellycode repo prints the @sha256 value.
+    # NOTE: these plugin/worker pins (and meta.version below) predate the Jellyfin 12.3
+    # stack; they get bumped once the 12.3 plugin releases are published.
     reference: harbor.bne1.ouchi.com.au/applications/jellyfin-distributed-plugin@sha256:08e00cfab506602110d3d74f99085c4b782f116545b5aae335106f9ae4ef7df5
     pullPolicy: IfNotPresent
   meta:
